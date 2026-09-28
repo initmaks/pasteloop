@@ -1,4 +1,8 @@
-# PasteLoop
+<p align="center">
+  <img src="assets/icon.png" width="128" height="128" alt="PasteLoop icon: an amber ⌘V on a graphite keycap">
+</p>
+
+<h1 align="center">PasteLoop</h1>
 
 A fast, local-first clipboard manager for macOS, written in Rust. Everything you copy lands in
 a strip of cards at the bottom of the screen, one keystroke away. No subscription, no account,
