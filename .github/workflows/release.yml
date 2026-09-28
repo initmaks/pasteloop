@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build, bundle, and zip
+        run: just package
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## " v " " { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          cat >> notes.md <<'NOTES'
+
+          ### Install
+
+          Download the zip, unzip it, and move `PasteLoop.app` to `/Applications`. This build is
+          not notarized: after the first launch attempt, open System Settings → Privacy & Security
+          and click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/PasteLoop.app`.
+          Requires an Apple Silicon Mac with macOS 15 or later.
+          NOTES
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/PasteLoop-$VERSION-arm64.zip" \
+            "dist/PasteLoop-$VERSION-arm64.zip.sha256" \
+            --title "PasteLoop $VERSION" \
+            --notes-file notes.md

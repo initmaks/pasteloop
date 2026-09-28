@@ -1,0 +1,7 @@
+/target
+/dist
+*.log
+.DS_Store
+
+# Local-only notes; never published.
+/private/

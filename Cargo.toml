@@ -1,0 +1,82 @@
+[package]
+name = "pasteloop"
+version = "1.0.0"
+edition = "2024"
+authors = ["Maks Sorokin"]
+license = "MIT"
+description = "A native macOS clipboard manager: bottom card strip, collections, instant search, Quick Paste, Paste Queue."
+repository = "https://github.com/initmaks/pasteloop"
+readme = "README.md"
+keywords = ["clipboard", "macos", "clipboard-manager", "gpui"]
+categories = ["gui"]
+publish = false
+default-run = "pasteloop"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "cd78c2db425ee6aa4b2b72d850e8f1f0f8189861" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "cd78c2db425ee6aa4b2b72d850e8f1f0f8189861", features = ["font-kit", "runtime_shaders"] }
+
+anyhow = "1.0"
+futures = "0.3"
+raw-window-handle = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rusqlite = { version = "0.40", features = ["bundled"] }
+blake3 = "1.8"
+uuid = { version = "1.26", features = ["v7"] }
+chrono = "0.4"
+url = "2.5"
+plist = "1.7"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "gif", "webp", "bmp"] }
+smallvec = "1.15"
+unicode-segmentation = "1.12"
+
+global-hotkey = "0.8"
+
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "NSArray", "NSBundle", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSEnumerator",
+    "NSError", "NSFileManager", "NSGeometry", "NSNotification", "NSObject", "NSProcessInfo",
+    "NSRange", "NSString", "NSThread", "NSURL", "NSUUID", "NSValue", "NSItemProvider", "NSProgress",
+    "block2",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "NSAppearance", "NSApplication", "NSBitmapImageRep", "NSButton", "NSCell", "NSColor",
+    "NSControl", "NSDragging", "NSDraggingItem", "NSDraggingSession", "NSEvent", "NSGraphics",
+    "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSPanel", "NSPasteboard", "NSPasteboardItem",
+    "NSResponder", "NSRunningApplication", "NSScreen", "NSStatusBar", "NSStatusBarButton",
+    "NSStatusItem", "NSView", "NSWindow", "NSWorkspace", "NSGraphicsContext", "NSColorSpace",
+    "NSGraphics", "libc", "objc2-core-graphics", "block2",
+] }
+objc2-vision = { version = "0.3.2", default-features = false, features = ["std", "VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes", "objc2-core-graphics"] }
+objc2-link-presentation = { version = "0.3.2", default-features = false, features = ["std", "LPMetadataProvider", "LPLinkMetadata", "block2"] }
+block2 = "0.6"
+objc2-service-management = { version = "0.3.2", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "CFArray", "CFBase", "CFData", "CFDate", "CFDictionary", "CFMachPort", "CFNumber",
+    "CFRunLoop", "CFString", "CFURL", "CFUUID",
+] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+    "std", "libc", "CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation", "CGImage",
+    "CGDisplayConfiguration", "CGWindow",
+] }
+
+[dev-dependencies]
+tempfile = "3.27"
+criterion = "0.8"
+
+[[bench]]
+name = "search"
+harness = false
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
