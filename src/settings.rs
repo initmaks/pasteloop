@@ -115,8 +115,12 @@ pub struct Settings {
     #[serde(alias = "previous_pinboard_key")]
     pub previous_collection_key: String,
     pub quick_paste_modifier: Modifier,
-    pub plain_text_modifier: Modifier,
+    /// Held with Return or Quick Paste: text in the other style, images and files as paths.
+    #[serde(alias = "plain_text_modifier")]
+    pub alternate_modifier: Modifier,
     pub paste_mode: PasteMode,
+    /// Return pastes text without formatting.
+    pub paste_plain_text: bool,
     pub retention: Retention,
     /// `None` until the user has answered the launch-at-login question once.
     pub launch_at_login: Option<bool>,
@@ -140,8 +144,9 @@ impl Default for Settings {
             next_collection_key: "cmd-right".into(),
             previous_collection_key: "cmd-left".into(),
             quick_paste_modifier: Modifier::Command,
-            plain_text_modifier: Modifier::Shift,
+            alternate_modifier: Modifier::Shift,
             paste_mode: PasteMode::ActiveApp,
+            paste_plain_text: true,
             retention: Retention::Month,
             launch_at_login: None,
             panel_height: DEFAULT_PANEL_HEIGHT,
@@ -395,18 +400,21 @@ mod tests {
     }
 
     #[test]
-    fn pre_release_settings_keys_are_read() {
+    fn older_settings_keys_are_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         fs::write(
             &path,
-            r#"{"stack_hotkey":"ctrl-cmd-q","next_pinboard_key":"cmd-]","previous_pinboard_key":"cmd-["}"#,
+            r#"{"stack_hotkey":"ctrl-cmd-q","next_pinboard_key":"cmd-]","previous_pinboard_key":"cmd-[","plain_text_modifier":"option"}"#,
         )
         .unwrap();
         let s = Settings::load(&path);
         assert_eq!(s.queue_hotkey, "ctrl-cmd-q");
         assert_eq!(s.next_collection_key, "cmd-]");
         assert_eq!(s.previous_collection_key, "cmd-[");
+        assert_eq!(s.alternate_modifier, Modifier::Option);
+        // 1.0.0 files predate the setting and get the new default: plain text.
+        assert!(s.paste_plain_text);
     }
 
     #[test]

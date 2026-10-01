@@ -405,7 +405,7 @@ pub fn after_own_write(state: Entity<AppState>, cx: &mut AsyncApp) {
 
 /// Writes the queue head to the pasteboard unless it is already there.
 async fn load_head(state: Entity<AppState>, cx: &mut AsyncApp) {
-    let (head, store, images_as_files) = cx.update(|cx| {
+    let (head, store, images_as_files, form) = cx.update(|cx| {
         let s = state.read(cx);
         (
             s.queue
@@ -414,12 +414,13 @@ async fn load_head(state: Entity<AppState>, cx: &mut AsyncApp) {
                 .cloned(),
             Arc::clone(&s.store),
             s.settings.images_as_files,
+            paste::Form::for_paste(s.settings.paste_plain_text, false),
         )
     });
     let Some(head) = head else {
         return;
     };
-    let reps = paste::representations(&head, &store, false, images_as_files);
+    let reps = paste::representations(&head, &store, form, images_as_files);
     let count = macos::write_pasteboard(&reps);
     cx.update(|cx| {
         state.update(cx, |s, cx| {

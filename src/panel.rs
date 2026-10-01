@@ -39,7 +39,7 @@ actions!(
         ExtendLeft,
         SelectAllCards,
         PasteSelected,
-        PastePlain,
+        PasteAlternate,
         CopyOnly,
         QuickLook,
         OpenItem,
@@ -66,15 +66,15 @@ actions!(
         QuickPaste7,
         QuickPaste8,
         QuickPaste9,
-        QuickPastePlain1,
-        QuickPastePlain2,
-        QuickPastePlain3,
-        QuickPastePlain4,
-        QuickPastePlain5,
-        QuickPastePlain6,
-        QuickPastePlain7,
-        QuickPastePlain8,
-        QuickPastePlain9,
+        QuickPasteAlt1,
+        QuickPasteAlt2,
+        QuickPasteAlt3,
+        QuickPasteAlt4,
+        QuickPasteAlt5,
+        QuickPasteAlt6,
+        QuickPasteAlt7,
+        QuickPasteAlt8,
+        QuickPasteAlt9,
     ]
 );
 
@@ -137,7 +137,7 @@ enum MenuEntry {
 #[derive(Clone, Debug, PartialEq)]
 enum MenuAction {
     Paste,
-    PastePlain,
+    PasteAlternate,
     Copy,
     AddTo(i64),
     RemoveFrom(i64),
@@ -586,31 +586,32 @@ impl PanelView {
         self.paste_items(items, false, cx);
     }
 
-    fn paste_plain(&mut self, _: &PastePlain, _: &mut Window, cx: &mut Context<Self>) {
+    fn paste_alternate(&mut self, _: &PasteAlternate, _: &mut Window, cx: &mut Context<Self>) {
         let items = self.state.read(cx).selected_items();
         self.paste_items(items, true, cx);
     }
 
-    fn quick_paste(&mut self, n: usize, plain: bool, cx: &mut Context<Self>) {
+    fn quick_paste(&mut self, n: usize, alternate: bool, cx: &mut Context<Self>) {
         let item = self.state.read(cx).items.get(n.saturating_sub(1)).cloned();
         if let Some(item) = item {
-            self.paste_items(vec![item], plain, cx);
+            self.paste_items(vec![item], alternate, cx);
         }
     }
 
     /// The paste flow: plan on the main thread (reads blobs), then run the write/inject/hide
     /// sequence as a task so window ordering happens outside the borrow.
-    fn paste_items(&mut self, items: Vec<Item>, plain: bool, cx: &mut Context<Self>) {
+    fn paste_items(&mut self, items: Vec<Item>, alternate: bool, cx: &mut Context<Self>) {
         if items.is_empty() {
             return;
         }
-        let (store, images_as_files, trusted, mode) = {
+        let (store, images_as_files, trusted, mode, form) = {
             let s = self.state.read(cx);
             (
                 Arc::clone(&s.store),
                 s.settings.images_as_files,
                 macos::accessibility_trusted(),
                 s.settings.paste_mode,
+                paste::Form::for_paste(s.settings.paste_plain_text, alternate),
             )
         };
         if mode == crate::settings::PasteMode::ActiveApp && !trusted {
@@ -627,7 +628,7 @@ impl PanelView {
             return;
         }
         let ids: Vec<i64> = items.iter().map(|i| i.id).collect();
-        let plan = paste::plan(&items, &store, plain, images_as_files);
+        let plan = paste::plan(&items, &store, form, images_as_files);
         let state = self.state.clone();
         let native = self.native.clone();
         self.context_menu = None;
@@ -677,11 +678,15 @@ impl PanelView {
         if items.is_empty() {
             return;
         }
-        let (store, images_as_files) = {
+        let (store, images_as_files, form) = {
             let s = self.state.read(cx);
-            (Arc::clone(&s.store), s.settings.images_as_files)
+            (
+                Arc::clone(&s.store),
+                s.settings.images_as_files,
+                paste::Form::for_paste(s.settings.paste_plain_text, false),
+            )
         };
-        let plan = paste::plan(&items, &store, false, images_as_files);
+        let plan = paste::plan(&items, &store, form, images_as_files);
         let count = paste::copy_only(plan);
         self.state
             .update(cx, |s, _| s.own_change_count = Some(count));
@@ -1265,7 +1270,7 @@ impl PanelView {
                     self.paste_items(vec![item], false, cx);
                 }
             }
-            MenuAction::PastePlain => {
+            MenuAction::PasteAlternate => {
                 if let Some(item) = item {
                     self.paste_items(vec![item], true, cx);
                 }
@@ -1351,17 +1356,19 @@ impl PanelView {
         let Some(item) = s.items.get(ix) else {
             return Vec::new();
         };
-        let mut entries = vec![
-            MenuEntry::Item {
-                label: "Paste".into(),
-                action: MenuAction::Paste,
+        let mut entries = vec![MenuEntry::Item {
+            label: "Paste".into(),
+            action: MenuAction::Paste,
+            enabled: true,
+        }];
+        if let Some(label) = alternate_paste_label(item.kind, s.settings.paste_plain_text) {
+            entries.push(MenuEntry::Item {
+                label: label.into(),
+                action: MenuAction::PasteAlternate,
                 enabled: true,
-            },
-            MenuEntry::Item {
-                label: "Paste as Plain Text".into(),
-                action: MenuAction::PastePlain,
-                enabled: true,
-            },
+            });
+        }
+        entries.extend([
             MenuEntry::Item {
                 label: "Copy".into(),
                 action: MenuAction::Copy,
@@ -1372,7 +1379,7 @@ impl PanelView {
                 label: "Add to Collection".into(),
                 entries: pin_entries(&s.collections, item),
             },
-        ];
+        ]);
         if let Tab::Collection(id) = s.tab
             && !s.search.active
         {
@@ -2269,10 +2276,15 @@ impl PanelView {
         let theme = &self.theme;
         let s = &self.state.read(cx).settings;
         let quick = s.quick_paste_modifier.symbol();
-        let plain = s.plain_text_modifier.symbol();
+        let alt = s.alternate_modifier.symbol();
+        let other_style = if s.paste_plain_text {
+            "formatted"
+        } else {
+            "plain text"
+        };
         let hints = [
             "↩ paste".to_string(),
-            format!("{plain}↩ plain text"),
+            format!("{alt}↩ {other_style}"),
             "↑ first card".to_string(),
             "space preview".to_string(),
             format!("{quick}1–9 paste by number"),
@@ -3212,6 +3224,17 @@ impl PanelView {
         });
     }
 }
+
+/// The context menu's second paste entry for this kind, or none when both pastes are the same.
+fn alternate_paste_label(kind: Kind, plain_by_default: bool) -> Option<&'static str> {
+    match kind {
+        Kind::Text | Kind::Link if plain_by_default => Some("Paste with Formatting"),
+        Kind::Text | Kind::Link => Some("Paste as Plain Text"),
+        Kind::Image | Kind::File => Some("Paste as Path"),
+        Kind::Color => None,
+    }
+}
+
 /// The "Add to Collection" submenu: each collection (checked when the item is in it; choosing a
 /// checked one removes it), then "New Collection…".
 fn pin_entries(boards: &[crate::store::Collection], item: &Item) -> Vec<MenuEntry> {
@@ -3351,13 +3374,13 @@ fn external_payload(
                 }
             }
             Kind::Image => {
-                let r = paste::representations(item, store, false, true);
+                let r = paste::representations(item, store, paste::Form::default(), true);
                 if let Some(path) = r.image_file {
                     files.push((path, false));
                 }
             }
             _ => {
-                let r = paste::representations(item, store, false, false);
+                let r = paste::representations(item, store, paste::Form::default(), false);
                 match &mut reps {
                     None => reps = Some(r),
                     Some(acc) => {
@@ -3434,7 +3457,7 @@ impl Render for PanelView {
             .on_action(cx.listener(Self::extend_left))
             .on_action(cx.listener(Self::select_all_cards))
             .on_action(cx.listener(Self::paste_selected))
-            .on_action(cx.listener(Self::paste_plain))
+            .on_action(cx.listener(Self::paste_alternate))
             .on_action(cx.listener(Self::copy_only))
             .on_action(cx.listener(Self::quick_look))
             .on_action(cx.listener(Self::open_item))
@@ -3463,24 +3486,24 @@ impl Render for PanelView {
             .font_family(MONO)
             .text_size(px(12.));
         macro_rules! quick_paste_actions {
-            ($($n:literal => $rich:ident, $plain:ident),* $(,)?) => {
+            ($($n:literal => $default:ident, $alternate:ident),* $(,)?) => {
                 $(
                     root = root
-                        .on_action(cx.listener(|this, _: &$rich, _, cx| this.quick_paste($n, false, cx)))
-                        .on_action(cx.listener(|this, _: &$plain, _, cx| this.quick_paste($n, true, cx)));
+                        .on_action(cx.listener(|this, _: &$default, _, cx| this.quick_paste($n, false, cx)))
+                        .on_action(cx.listener(|this, _: &$alternate, _, cx| this.quick_paste($n, true, cx)));
                 )*
             };
         }
         quick_paste_actions!(
-            1 => QuickPaste1, QuickPastePlain1,
-            2 => QuickPaste2, QuickPastePlain2,
-            3 => QuickPaste3, QuickPastePlain3,
-            4 => QuickPaste4, QuickPastePlain4,
-            5 => QuickPaste5, QuickPastePlain5,
-            6 => QuickPaste6, QuickPastePlain6,
-            7 => QuickPaste7, QuickPastePlain7,
-            8 => QuickPaste8, QuickPastePlain8,
-            9 => QuickPaste9, QuickPastePlain9,
+            1 => QuickPaste1, QuickPasteAlt1,
+            2 => QuickPaste2, QuickPasteAlt2,
+            3 => QuickPaste3, QuickPasteAlt3,
+            4 => QuickPaste4, QuickPasteAlt4,
+            5 => QuickPaste5, QuickPasteAlt5,
+            6 => QuickPaste6, QuickPasteAlt6,
+            7 => QuickPaste7, QuickPasteAlt7,
+            8 => QuickPaste8, QuickPasteAlt8,
+            9 => QuickPaste9, QuickPasteAlt9,
         );
 
         // Resize grip along the top edge. It is a flow element because an absolute one
@@ -3603,7 +3626,25 @@ pub async fn reanchor(handle: WindowHandle<PanelView>, cx: &mut AsyncApp) {
 
 #[cfg(test)]
 mod tests {
-    use super::Odometer;
+    use super::{Odometer, alternate_paste_label};
+
+    #[test]
+    fn alternate_paste_is_named_for_the_kind() {
+        use crate::store::Kind;
+        assert_eq!(
+            alternate_paste_label(Kind::Text, true),
+            Some("Paste with Formatting")
+        );
+        assert_eq!(
+            alternate_paste_label(Kind::Link, false),
+            Some("Paste as Plain Text")
+        );
+        assert_eq!(
+            alternate_paste_label(Kind::Image, true),
+            Some("Paste as Path")
+        );
+        assert_eq!(alternate_paste_label(Kind::Color, true), None);
+    }
 
     #[test]
     fn odometer_snaps_then_rolls_to_the_value() {

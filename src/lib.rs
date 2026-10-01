@@ -310,7 +310,7 @@ fn panel_key_bindings(settings: &Settings) -> Vec<KeyBinding> {
     use panel::*;
     let c = Some(panel::KEY_CONTEXT);
     let quick = settings.quick_paste_modifier.keystroke_token();
-    let plain = settings.plain_text_modifier.keystroke_token();
+    let alt = settings.alternate_modifier.keystroke_token();
     let mut bindings = vec![
         KeyBinding::new("escape", HidePanel, c),
         KeyBinding::new("right", NextCard, c),
@@ -323,7 +323,7 @@ fn panel_key_bindings(settings: &Settings) -> Vec<KeyBinding> {
         KeyBinding::new("shift-left", ExtendLeft, c),
         KeyBinding::new("cmd-a", SelectAllCards, c),
         KeyBinding::new("enter", PasteSelected, c),
-        KeyBinding::new(&format!("{plain}-enter"), PastePlain, c),
+        KeyBinding::new(&format!("{alt}-enter"), PasteAlternate, c),
         KeyBinding::new("cmd-c", CopyOnly, c),
         KeyBinding::new("space", QuickLook, c),
         KeyBinding::new("cmd-o", OpenItem, c),
@@ -344,25 +344,25 @@ fn panel_key_bindings(settings: &Settings) -> Vec<KeyBinding> {
         KeyBinding::new("cmd-q", Quit, c),
     ];
     macro_rules! quick_paste_bindings {
-        ($($n:literal => $rich:ident, $plain_action:ident),* $(,)?) => {
+        ($($n:literal => $default:ident, $alternate:ident),* $(,)?) => {
             $(
-                bindings.push(KeyBinding::new(&format!("{quick}-{}", $n), $rich, c));
-                if settings.quick_paste_modifier != settings.plain_text_modifier {
-                    bindings.push(KeyBinding::new(&format!("{plain}-{quick}-{}", $n), $plain_action, c));
+                bindings.push(KeyBinding::new(&format!("{quick}-{}", $n), $default, c));
+                if settings.quick_paste_modifier != settings.alternate_modifier {
+                    bindings.push(KeyBinding::new(&format!("{alt}-{quick}-{}", $n), $alternate, c));
                 }
             )*
         };
     }
     quick_paste_bindings!(
-        1 => QuickPaste1, QuickPastePlain1,
-        2 => QuickPaste2, QuickPastePlain2,
-        3 => QuickPaste3, QuickPastePlain3,
-        4 => QuickPaste4, QuickPastePlain4,
-        5 => QuickPaste5, QuickPastePlain5,
-        6 => QuickPaste6, QuickPastePlain6,
-        7 => QuickPaste7, QuickPastePlain7,
-        8 => QuickPaste8, QuickPastePlain8,
-        9 => QuickPaste9, QuickPastePlain9,
+        1 => QuickPaste1, QuickPasteAlt1,
+        2 => QuickPaste2, QuickPasteAlt2,
+        3 => QuickPaste3, QuickPasteAlt3,
+        4 => QuickPaste4, QuickPasteAlt4,
+        5 => QuickPaste5, QuickPasteAlt5,
+        6 => QuickPaste6, QuickPasteAlt6,
+        7 => QuickPaste7, QuickPasteAlt7,
+        8 => QuickPaste8, QuickPasteAlt8,
+        9 => QuickPaste9, QuickPasteAlt9,
     );
     bindings
 }

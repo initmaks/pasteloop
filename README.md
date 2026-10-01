@@ -12,7 +12,8 @@ no cloud: your history is a plain SQLite file you can script.
   from it.
 - Captures text (with rich formatting), links, images, files, and colors. Password managers
   that mark clipboard contents as concealed are skipped.
-- Return pastes into the app you were using. Shift-Return pastes plain text. Cmd-1 to Cmd-9
+- Return pastes into the app you were using, text without its formatting. Shift-Return keeps
+  the formatting, and pastes images and files as their paths. Cmd-1 to Cmd-9
   paste by number (Quick Paste).
 - Search as you type across titles, text, link titles, app names, and text recognized inside
   images (on-device Vision OCR). Filter by type, app, date, and collection with chips.
@@ -67,8 +68,9 @@ developers. The name appears here only to identify the app PasteLoop can import 
 | Paste Queue | Shift-Cmd-C (configurable) |
 | Move selection | Left / Right; Up, Home, or Cmd-Up for the first card; Cmd-Down for the last |
 | Extend selection | Shift-Left / Shift-Right, Cmd-A for all |
-| Paste, paste as plain text | Return, Shift-Return |
-| Quick Paste | Cmd-1 … Cmd-9 (add Shift for plain text) |
+| Paste (text without formatting) | Return |
+| Paste text with formatting, images and files as paths | Shift-Return |
+| Quick Paste | Cmd-1 … Cmd-9 (add Shift for formatting or paths) |
 | Copy without pasting | Cmd-C |
 | Preview | Space |
 | Open link or file | Cmd-O |

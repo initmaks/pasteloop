@@ -4,6 +4,9 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 
 ## Unreleased
 
+<!-- One line per entry: GitHub release notes keep line breaks. -->
+- Return now pastes text without its formatting, and Shift-Return pastes it with formatting. Images and files still paste as themselves on Return and as paths on Shift-Return. Settings → General → Paste text switches the default back. The context menu names the second paste for each kind of card ("Paste with Formatting", "Paste as Path").
+
 ## 1.0.0 — 2026-09-27
 
 First public release.

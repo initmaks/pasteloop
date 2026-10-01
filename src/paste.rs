@@ -51,12 +51,31 @@ pub const SEQUENCE_GAP: Duration = Duration::from_millis(80);
 /// before the injected ⌘V is posted. One run-loop turn is enough; this leaves margin.
 const FOCUS_SETTLE: Duration = Duration::from_millis(45);
 
-/// Representations for one item. `plain_only` writes just `public.utf8-plain-text`: the text
-/// for text-like kinds, the file path for images (a PNG in the cache) and files.
+/// What a paste writes. The default writes every item as it was captured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Form {
+    /// Text-like items without formatting: no RTF, HTML, or URL type.
+    pub plain_text: bool,
+    /// Images and files as their paths, one per line (an image as a PNG in the cache).
+    pub paths: bool,
+}
+
+impl Form {
+    /// Return pastes text in the user's default style and images and files as themselves;
+    /// the alternate modifier switches text to the other style and pastes paths.
+    pub fn for_paste(plain_by_default: bool, alternate: bool) -> Form {
+        Form {
+            plain_text: plain_by_default != alternate,
+            paths: alternate,
+        }
+    }
+}
+
+/// Representations for one item in the given form.
 pub fn representations(
     item: &Item,
     store: &Store,
-    plain_only: bool,
+    form: Form,
     images_as_files: bool,
 ) -> Representations {
     let mut reps = Representations::default();
@@ -67,7 +86,7 @@ pub fn representations(
                 .ok()
                 .flatten()
                 .or_else(|| item.text.clone());
-            if !plain_only
+            if !form.plain_text
                 && let Some(blob) = &item.rich_blob
                 && let Ok(bytes) = std::fs::read(store.blob_path(blob))
             {
@@ -80,7 +99,7 @@ pub fn representations(
         }
         Kind::Link => {
             reps.plain = item.text.clone();
-            if !plain_only {
+            if !form.plain_text {
                 reps.url = item.text.clone();
             }
         }
@@ -97,7 +116,7 @@ pub fn representations(
                     macos::image_to_png(&bytes)
                 };
                 if let Some(png) = png {
-                    if plain_only {
+                    if form.paths {
                         reps.plain = write_temp_png(blob, &png).map(|p| p.display().to_string());
                     } else {
                         if images_as_files {
@@ -108,7 +127,7 @@ pub fn representations(
                 }
             }
         }
-        Kind::File if plain_only => reps.plain = Some(item.files.join("\n")),
+        Kind::File if form.paths => reps.plain = Some(item.files.join("\n")),
         Kind::File => {
             reps.file_paths = item.files.clone();
         }
@@ -126,7 +145,7 @@ fn write_temp_png(blob: &str, png: &[u8]) -> Option<PathBuf> {
 
 /// One write when every item is text-like (joined with newlines) or every item is a file
 /// (all URLs at once); otherwise a sequence, one item per write.
-pub fn plan(items: &[Item], store: &Store, plain_only: bool, images_as_files: bool) -> Plan {
+pub fn plan(items: &[Item], store: &Store, form: Form, images_as_files: bool) -> Plan {
     let all_textual = items
         .iter()
         .all(|i| matches!(i.kind, Kind::Text | Kind::Link | Kind::Color));
@@ -134,14 +153,19 @@ pub fn plan(items: &[Item], store: &Store, plain_only: bool, images_as_files: bo
     if items.len() <= 1 {
         let reps = items
             .first()
-            .map(|i| representations(i, store, plain_only, images_as_files))
+            .map(|i| representations(i, store, form, images_as_files))
             .unwrap_or_default();
         return Plan::One(reps);
     }
     if all_textual {
+        // Formatting cannot be joined, so several text items always paste as plain text.
+        let plain = Form {
+            plain_text: true,
+            paths: false,
+        };
         let parts: Vec<String> = items
             .iter()
-            .filter_map(|i| representations(i, store, true, false).plain)
+            .filter_map(|i| representations(i, store, plain, false).plain)
             .collect();
         return Plan::One(Representations {
             plain: Some(parts.join("\n")),
@@ -150,7 +174,7 @@ pub fn plan(items: &[Item], store: &Store, plain_only: bool, images_as_files: bo
     }
     if all_files {
         let paths: Vec<String> = items.iter().flat_map(|i| i.files.clone()).collect();
-        return Plan::One(if plain_only {
+        return Plan::One(if form.paths {
             Representations {
                 plain: Some(paths.join("\n")),
                 ..Default::default()
@@ -165,7 +189,7 @@ pub fn plan(items: &[Item], store: &Store, plain_only: bool, images_as_files: bo
     Plan::Sequence(
         items
             .iter()
-            .map(|i| representations(i, store, plain_only, images_as_files))
+            .map(|i| representations(i, store, form, images_as_files))
             .filter(|r| !r.is_empty())
             .collect(),
     )
@@ -339,6 +363,19 @@ mod tests {
     use super::*;
     use crate::store::{NewItem, Store};
 
+    const AS_IS: Form = Form {
+        plain_text: false,
+        paths: false,
+    };
+    const PLAIN: Form = Form {
+        plain_text: true,
+        paths: false,
+    };
+    const PATHS: Form = Form {
+        plain_text: true,
+        paths: true,
+    };
+
     fn store_with_items() -> (tempfile::TempDir, Store, Vec<Item>) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -364,30 +401,30 @@ mod tests {
     #[test]
     fn single_item_representations() {
         let (_d, store, items) = store_with_items();
-        let text = representations(&items[0], &store, false, false);
+        let text = representations(&items[0], &store, AS_IS, false);
         assert_eq!(text.plain.as_deref(), Some("Hello"));
         assert!(text.rtf.is_some());
-        let plain = representations(&items[0], &store, true, false);
+        let plain = representations(&items[0], &store, PLAIN, false);
         assert!(plain.rtf.is_none());
         assert_eq!(plain.plain.as_deref(), Some("Hello"));
 
-        let link = representations(&items[1], &store, false, false);
+        let link = representations(&items[1], &store, AS_IS, false);
         assert_eq!(link.url.as_deref(), Some("https://example.com/a"));
         assert_eq!(link.plain.as_deref(), Some("https://example.com/a"));
         assert!(
-            representations(&items[1], &store, true, false)
+            representations(&items[1], &store, PLAIN, false)
                 .url
                 .is_none()
         );
 
-        let files = representations(&items[2], &store, false, false);
+        let files = representations(&items[2], &store, AS_IS, false);
         assert_eq!(files.file_paths.len(), 2);
         assert!(files.plain.is_none());
-        let files_plain = representations(&items[2], &store, true, false);
+        let files_plain = representations(&items[2], &store, PATHS, false);
         assert!(files_plain.file_paths.is_empty());
         assert_eq!(files_plain.plain.as_deref(), Some("/tmp/a.txt\n/tmp/b.txt"));
 
-        let color = representations(&items[3], &store, false, false);
+        let color = representations(&items[3], &store, AS_IS, false);
         assert_eq!(color.plain.as_deref(), Some("#ABCDEF"));
     }
 
@@ -397,7 +434,7 @@ mod tests {
         let textual = plan(
             &[items[0].clone(), items[1].clone(), items[3].clone()],
             &store,
-            false,
+            AS_IS,
             false,
         );
         assert_eq!(
@@ -407,15 +444,15 @@ mod tests {
                 ..Default::default()
             })
         );
-        let files = plan(&[items[2].clone(), items[2].clone()], &store, false, false);
+        let files = plan(&[items[2].clone(), items[2].clone()], &store, AS_IS, false);
         match files {
             Plan::One(r) => assert_eq!(r.file_paths.len(), 4),
             _ => panic!("files paste at once"),
         }
-        let mixed = plan(&[items[0].clone(), items[2].clone()], &store, false, false);
+        let mixed = plan(&[items[0].clone(), items[2].clone()], &store, AS_IS, false);
         assert!(matches!(mixed, Plan::Sequence(ref v) if v.len() == 2));
         assert_eq!(
-            plan(&[], &store, false, false),
+            plan(&[], &store, AS_IS, false),
             Plan::One(Representations::default())
         );
     }
@@ -441,5 +478,22 @@ mod tests {
             decide(Clipboard, true, true, true),
             (false, Outcome::CopiedOnly)
         );
+    }
+
+    #[test]
+    fn return_follows_the_text_default_and_the_modifier_flips_it() {
+        // Plain text by default: Return strips formatting, the modifier keeps it and pastes paths.
+        assert_eq!(Form::for_paste(true, false), PLAIN);
+        assert!(!Form::for_paste(true, true).plain_text);
+        assert!(Form::for_paste(true, true).paths);
+        // Formatted by default: the modifier is the plain-text-and-paths paste.
+        assert_eq!(Form::for_paste(false, false), AS_IS);
+        assert_eq!(Form::for_paste(false, true), PATHS);
+
+        let (_d, store, items) = store_with_items();
+        let formatted = representations(&items[0], &store, Form::for_paste(true, true), false);
+        assert!(formatted.rtf.is_some());
+        let files = representations(&items[2], &store, Form::for_paste(true, false), false);
+        assert_eq!(files.file_paths.len(), 2);
     }
 }

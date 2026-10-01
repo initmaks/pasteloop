@@ -402,6 +402,19 @@ impl SettingsView {
                 |this, mode, cx| this.edit(cx, |s| s.paste_mode = mode),
             ),
         ));
+        col = col.child(self.row(
+            "Paste text",
+            self.segmented(
+                "paste-text",
+                vec![
+                    (true, "Without formatting".into()),
+                    (false, "With formatting".into()),
+                ],
+                s.paste_plain_text,
+                cx,
+                |this, plain, cx| this.edit(cx, |s| s.paste_plain_text = plain),
+            ),
+        ));
         col = col.child(
             self.row(
                 "Keep history",
@@ -607,9 +620,9 @@ impl SettingsView {
                 }),
             ))
             .child(self.row(
-                "Plain Text modifier",
-                self.segmented("plain-mod", modifiers, s.plain_text_modifier, cx, |this, m, cx| {
-                    this.edit(cx, |s| s.plain_text_modifier = m)
+                if s.paste_plain_text { "Paste formatted modifier" } else { "Paste plain modifier" },
+                self.segmented("alternate-mod", modifiers, s.alternate_modifier, cx, |this, m, cx| {
+                    this.edit(cx, |s| s.alternate_modifier = m)
                 }),
             ))
             .child(
@@ -633,7 +646,7 @@ impl SettingsView {
                             s.next_collection_key = defaults.next_collection_key;
                             s.previous_collection_key = defaults.previous_collection_key;
                             s.quick_paste_modifier = defaults.quick_paste_modifier;
-                            s.plain_text_modifier = defaults.plain_text_modifier;
+                            s.alternate_modifier = defaults.alternate_modifier;
                         });
                         cx.emit(SettingsEvent::HotkeysChanged);
                     })),
@@ -1282,8 +1295,12 @@ impl Render for SettingsView {
 /// Logs a saved settings change.
 pub fn log_change(settings: &Settings) {
     info!(
-        "settings saved: hotkey={} queue={} retention={:?} paste={:?}",
-        settings.activation_hotkey, settings.queue_hotkey, settings.retention, settings.paste_mode
+        "settings saved: hotkey={} queue={} retention={:?} paste={:?} plain_text={}",
+        settings.activation_hotkey,
+        settings.queue_hotkey,
+        settings.retention,
+        settings.paste_mode,
+        settings.paste_plain_text
     );
     if settings.ignored_apps.len() > 50 {
         warn!(

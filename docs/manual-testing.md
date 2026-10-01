@@ -22,7 +22,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 7 | Copy the same text twice | One card, moved to the front | `new=false` |
 | 8 | Panel open, press Right/Left, Cmd-Down, then Up (also Home, Cmd-Up), Shift-Right | Selection ring moves; Cmd-Down jumps to the last card; Up scrolls back to the first card and selects it; multi-selection rings | — |
 | 9 | Select a card, press Return | Panel hides, then content lands at the cursor in the target app. Verify in both TextEdit and a terminal (iTerm2/Terminal): the ⌘V is posted to the session tap after the panel resigns key focus, so it must reach apps that dispatch ⌘V through the key window | `paste: writes=1 inject=true outcome=Pasted` |
-| 10 | Shift-Return on a rich text card | Plain text only (no formatting) | `paste:` |
+| 10 | In TextEdit, Return on a rich text card, then Shift-Return on it | Return pastes the text without formatting; Shift-Return keeps bold, fonts, and links. With Settings → General → Paste text set to "With formatting", the two swap | `paste:` |
 | 10b | Shift-Return on an image card, then on a file card, in TextEdit | The image pastes as the path of a PNG in `~/Library/Caches/PasteLoop/paste`; the file as its path | `paste:` |
 | 11 | Look at the first nine cards, then hold Cmd | Each shows a ⌘1–⌘9 keycap; holding Cmd lights them all in amber; Cmd-3 pastes the third | `paste:` |
 | 12 | Cmd-C on a card | Pasteboard holds the item, panel hides, nothing pasted | `copied 1 item(s)` |
