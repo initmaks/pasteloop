@@ -22,7 +22,10 @@ Usage:
   pasteloop ocr <image>          print the text Vision recognizes in an image
   pasteloop seed [n]             insert n synthetic text items (performance checks)
   pasteloop import-paste [--db <path>] [--limit n] [--dry-run]
-                              migrate text, link, and color history from the Paste app";
+                              migrate text, link, and color history from the Paste app
+  pasteloop backup [--to <dir>]  back up now (default: iCloud Drive/PasteLoop)
+  pasteloop restore --from <backup folder>
+                              merge a backup into this library";
 
 fn open_store() -> Result<Store> {
     Store::open(&settings::data_dir()).context("open store")
@@ -196,6 +199,45 @@ pub fn run_cli(args: &[String]) -> Result<()> {
                 Ok(())
             })?;
             println!("seeded {n} items");
+        }
+        "backup" => {
+            let root = flag(rest, "--to")
+                .map(PathBuf::from)
+                .or_else(crate::backup::root)
+                .ok_or_else(|| anyhow!("no backup location; pass --to <dir>"))?;
+            let store = open_store()?;
+            let report = crate::backup::back_up(&store, &settings::settings_path(), &root)?;
+            println!(
+                "backed up {} items ({} KB snapshot, {} blobs copied, {} pruned) to {} in {:.1} s",
+                report.manifest.items,
+                report.snapshot_bytes / 1024,
+                report.copied_blobs,
+                report.pruned_blobs,
+                report.folder.display(),
+                report.elapsed.as_secs_f64()
+            );
+        }
+        "restore" => {
+            let folder = flag(rest, "--from")
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow!("usage: pasteloop restore --from <backup folder>"))?;
+            let root = folder
+                .parent()
+                .ok_or_else(|| anyhow!("{} has no parent folder", folder.display()))?;
+            let manifest = crate::backup::backups(root)?
+                .into_iter()
+                .find(|(f, _)| *f == folder)
+                .map(|(_, m)| m)
+                .ok_or_else(|| anyhow!("no backup in {}", folder.display()))?;
+            let store = open_store()?;
+            let report = crate::backup::restore(&store, root, &folder, &manifest)?;
+            println!(
+                "restored {} items and {} collections from {} ({} blob files missing)",
+                report.merged.items,
+                report.merged.collections,
+                manifest.device,
+                report.missing_blobs
+            );
         }
         "import-paste" => {
             let db = flag(rest, "--db")

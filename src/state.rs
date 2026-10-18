@@ -241,10 +241,110 @@ pub struct AppState {
     /// True while the Settings window is open, so the bar stays visible for a live preview.
     pub settings_open: bool,
     pub queue: PasteQueue,
+    pub backup: BackupState,
+}
+
+/// Where the iCloud Drive backup stands, for Settings.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum BackupStatus {
+    #[default]
+    Off,
+    /// iCloud Drive is off on this Mac, or this instance runs on a test data directory.
+    Unavailable,
+    Idle,
+    Running,
+    Restoring,
+    Failed(String),
+}
+
+/// The backup's status and the change tracking that decides when the next one is due.
+#[derive(Debug, Default)]
+pub struct BackupState {
+    pub status: BackupStatus,
+    /// When the last backup finished (ms) and how many items it held.
+    pub last_at: Option<i64>,
+    pub last_items: i64,
+    /// The last snapshot, and whether iCloud Drive has uploaded it (`None` when unknown).
+    pub snapshot: Option<std::path::PathBuf>,
+    pub uploaded: Option<bool>,
+    /// Set by "Back Up Now" and by turning backup on: run at the next check.
+    pub requested: bool,
+    /// The library fingerprint at the last backup, and as last seen.
+    pub backed_up: Option<String>,
+    pub seen: Option<(String, i64)>,
+    /// When the latest change not yet backed up was seen, and whether the changes removed items.
+    pub changed_at: Option<Instant>,
+    pub deleted: bool,
+}
+
+impl BackupState {
+    /// Records the current fingerprint and live item count; returns whether a backup is due.
+    pub fn observe(&mut self, fingerprint: String, live: i64, now: Instant) -> bool {
+        if self.backed_up.as_deref() == Some(fingerprint.as_str()) {
+            self.changed_at = None;
+            self.deleted = false;
+        } else if self.seen.as_ref().map(|(f, _)| f) != Some(&fingerprint) {
+            self.changed_at = Some(now);
+            if self.seen.as_ref().is_some_and(|(_, before)| live < *before) {
+                self.deleted = true;
+            }
+        }
+        self.seen = Some((fingerprint, live));
+        let since_backup = self
+            .last_at
+            .map(|at| Duration::from_millis((now_ms() - at).max(0) as u64));
+        self.requested
+            || crate::backup::due(
+                since_backup,
+                self.changed_at.map(|t| now.duration_since(t)),
+                self.deleted,
+            )
+    }
+
+    /// The line Settings shows under the switch.
+    pub fn summary(&self, now: i64) -> String {
+        match &self.status {
+            BackupStatus::Off => "Off. Your history stays on this Mac.".into(),
+            BackupStatus::Unavailable => "iCloud Drive is off on this Mac.".into(),
+            BackupStatus::Running => "Backing up…".into(),
+            BackupStatus::Restoring => "Restoring from iCloud Drive…".into(),
+            BackupStatus::Failed(err) => format!("Last backup failed: {err}"),
+            BackupStatus::Idle => match self.last_at {
+                None => "Waiting for the first backup…".into(),
+                Some(at) => {
+                    let upload = match self.uploaded {
+                        Some(true) => " · in iCloud",
+                        Some(false) => " · uploading",
+                        None => "",
+                    };
+                    format!(
+                        "Last backup: {} · {} items{upload}",
+                        crate::cards::relative_time(at, now),
+                        self.last_items
+                    )
+                }
+            },
+        }
+    }
 }
 
 impl AppState {
     pub fn new(store: Arc<Store>, settings: Settings) -> AppState {
+        let backup = BackupState {
+            last_at: store
+                .meta("backup_at")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok()),
+            last_items: store
+                .meta("backup_items")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            backed_up: store.meta("backup_stamp").ok().flatten(),
+            ..Default::default()
+        };
         let mut state = AppState {
             store,
             settings,
@@ -270,6 +370,7 @@ impl AppState {
             preview: None,
             settings_open: false,
             queue: PasteQueue::default(),
+            backup,
         };
         state.refresh_collections();
         state.refresh_apps();

@@ -350,6 +350,21 @@ pub struct Stats {
     pub blob_bytes: i64,
 }
 
+/// What a snapshot for a backup holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SnapshotInfo {
+    pub items: i64,
+    pub collections: i64,
+    pub blob_ids: Vec<String>,
+}
+
+/// What merging a backup's snapshot added.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MergeReport {
+    pub items: usize,
+    pub collections: usize,
+}
+
 pub struct Store {
     dir: PathBuf,
     db_path: PathBuf,
@@ -902,6 +917,140 @@ impl Store {
         })
     }
 
+    // ---- backup --------------------------------------------------------------------------------
+
+    /// The id this library was created with. It names the library's backup and tags its items.
+    pub fn library_id(&self) -> &str {
+        &self.device_id
+    }
+
+    /// When this library was created, read from its time-ordered (v7) id.
+    pub fn library_created_ms(&self) -> Option<i64> {
+        let (secs, nanos) = uuid::Uuid::parse_str(&self.device_id)
+            .ok()?
+            .get_timestamp()?
+            .to_unix();
+        Some(secs as i64 * 1000 + nanos as i64 / 1_000_000)
+    }
+
+    pub fn meta(&self, key: &str) -> Result<Option<String>> {
+        self.read(|c| {
+            Ok(
+                c.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                    r.get(0)
+                })
+                .optional()?,
+            )
+        })
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<()> {
+        self.write(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// A summary that changes whenever anything a backup holds changes: items, their edits,
+    /// recognized text and link titles, deletions, collections and their contents.
+    /// Also returns the number of live (not deleted) items.
+    pub fn fingerprint(&self) -> Result<(String, i64)> {
+        self.read(|c| {
+            let (items, live): (String, i64) = c.query_row(
+                "SELECT count(*) || ':' || count(deleted_at) || ':' || \
+                 COALESCE(max(updated_at), 0) || ':' || COALESCE(max(created_at), 0) || ':' || \
+                 COALESCE(max(last_used_at), 0) || ':' || COALESCE(max(deleted_at), 0) || ':' || \
+                 count(ocr_text) || ':' || count(link_title), count(*) - count(deleted_at) \
+                 FROM items",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            let collections: String = c.query_row(
+                "SELECT (SELECT COALESCE(group_concat(id || name || color || position), '') \
+                 FROM collections) || ':' || (SELECT count(*) || '/' || \
+                 COALESCE(sum(position), 0) FROM collection_items)",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((format!("{items}|{collections}"), live))
+        })
+    }
+
+    /// Writes a self-contained copy of the database to `dest` for a backup: deleted items are
+    /// left out and the search index is emptied (a restore rebuilds it as rows go in), which
+    /// makes the copy less than half the size. Reads only; the app keeps writing meanwhile.
+    pub fn snapshot_into(&self, dest: &Path) -> Result<SnapshotInfo> {
+        let _ = fs::remove_file(dest);
+        let dest_str = dest.to_string_lossy().to_string();
+        self.read(|c| {
+            c.execute("VACUUM INTO ?1", params![dest_str])?;
+            Ok(())
+        })?;
+        let conn = Connection::open(dest)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = DELETE; PRAGMA foreign_keys = ON; \
+             DELETE FROM items WHERE deleted_at IS NOT NULL; \
+             INSERT INTO items_fts(items_fts) VALUES ('delete-all');",
+        )?;
+        recount_blobs(&conn)?;
+        conn.execute_batch(
+            "DELETE FROM blobs WHERE refcount <= 0; \
+             DELETE FROM meta WHERE key LIKE 'backup_%'; VACUUM;",
+        )?;
+        let (items, collections) = conn.query_row(
+            "SELECT (SELECT count(*) FROM items), (SELECT count(*) FROM collections)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        let blob_ids = {
+            let mut stmt = conn.prepare("SELECT id FROM blobs ORDER BY id")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()?
+        };
+        Ok(SnapshotInfo {
+            items,
+            collections,
+            blob_ids,
+        })
+    }
+
+    /// Adds a backup's snapshot to this library. Items already here (the same id, or the same
+    /// content) are kept as they are; the rest go below this library's lowest id, since the
+    /// backup is normally older, so ids keep following time. A backup item newer than the oldest
+    /// local one is marked as moved, which is what lets search find it (see `build_search_sql`).
+    /// Collections are matched by id, memberships carried over, and blob rows added; the blob
+    /// files themselves are copied separately (`missing_blob_files`).
+    pub fn merge_snapshot(&self, snapshot: &Path) -> Result<MergeReport> {
+        {
+            // Bring the snapshot to this build's schema; fails for one from a newer build.
+            let conn = Connection::open(snapshot)?;
+            migrate(&conn)?;
+        }
+        let path = snapshot.to_string_lossy().to_string();
+        self.write(|conn| {
+            conn.execute("ATTACH DATABASE ?1 AS b", params![path])?;
+            let result = merge_attached(conn);
+            conn.execute_batch("DETACH DATABASE b")?;
+            result
+        })
+    }
+
+    /// Blob ids in use whose files are not on disk yet (after a merge, until they are copied).
+    pub fn missing_blob_files(&self) -> Result<Vec<String>> {
+        let ids = self.read(|c| {
+            let mut stmt = c.prepare("SELECT id FROM blobs WHERE refcount > 0")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+        })?;
+        Ok(ids
+            .into_iter()
+            .filter(|id| !self.blob_path(id).exists())
+            .collect())
+    }
+
     // ---- collections ---------------------------------------------------------------------------
 
     pub fn collections(&self) -> Result<Vec<Collection>> {
@@ -1356,6 +1505,110 @@ fn release_blob(conn: &Connection, id: &str) -> Result<()> {
         params![id],
     )?;
     Ok(())
+}
+
+/// Sets every blob's refcount to the number of item columns that reference it.
+fn recount_blobs(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TEMP TABLE blob_refs AS \
+           SELECT text_blob AS id FROM items WHERE text_blob IS NOT NULL \
+           UNION ALL SELECT rich_blob FROM items WHERE rich_blob IS NOT NULL \
+           UNION ALL SELECT image_blob FROM items WHERE image_blob IS NOT NULL \
+           UNION ALL SELECT link_image_blob FROM items WHERE link_image_blob IS NOT NULL; \
+         CREATE INDEX temp.blob_refs_id ON blob_refs(id); \
+         UPDATE blobs SET refcount = (SELECT count(*) FROM blob_refs r WHERE r.id = blobs.id); \
+         DROP TABLE temp.blob_refs;",
+    )?;
+    Ok(())
+}
+
+const ITEM_TABLE_COLUMNS: &str = "uuid, kind, created_at, updated_at, last_used_at, \
+    source_bundle_id, source_app_name, title, text, text_blob, rich_blob, rich_type, image_blob, \
+    image_w, image_h, image_truncated, files_json, size_bytes, content_hash, ocr_text, link_title, \
+    link_domain, link_image_blob, device_id, deleted_at";
+
+/// `merge_snapshot` with the snapshot attached as `b`.
+fn merge_attached(conn: &mut Connection) -> Result<MergeReport> {
+    let tx = conn.transaction()?;
+    let (local_min, local_max, backup_min, backup_max): (
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    ) = tx.query_row(
+        "SELECT (SELECT min(id) FROM main.items), (SELECT max(id) FROM main.items), \
+         (SELECT min(id) FROM b.items), (SELECT max(id) FROM b.items)",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+    let offset = match (local_min, backup_max) {
+        (Some(min), Some(max)) if max >= min => min - 1 - max,
+        _ => 0,
+    };
+    tx.execute_batch(
+        "CREATE TEMP TABLE item_map (b_id INTEGER PRIMARY KEY, m_id INTEGER NOT NULL); \
+         INSERT INTO item_map SELECT bi.id, mi.id FROM b.items bi \
+           JOIN main.items mi ON mi.uuid = bi.uuid; \
+         INSERT OR IGNORE INTO item_map SELECT bi.id, mi.id FROM b.items bi \
+           JOIN main.items mi ON mi.content_hash = bi.content_hash AND mi.deleted_at IS NULL \
+           WHERE bi.deleted_at IS NULL;",
+    )?;
+    let items = tx.execute(
+        &format!(
+            "INSERT INTO main.items (id, {ITEM_TABLE_COLUMNS}) \
+             SELECT id + ?1, {ITEM_TABLE_COLUMNS} FROM b.items \
+             WHERE deleted_at IS NULL AND id NOT IN (SELECT b_id FROM item_map) ORDER BY id"
+        ),
+        params![offset],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO item_map SELECT id, id + ?1 FROM b.items WHERE deleted_at IS NULL",
+        params![offset],
+    )?;
+    if let (Some(_), Some(lo), Some(hi)) = (local_max, backup_min, backup_max) {
+        tx.execute(
+            "UPDATE main.items SET last_used_at = created_at \
+             WHERE id BETWEEN ?1 AND ?2 AND last_used_at IS NULL AND created_at > \
+               (SELECT min(created_at) FROM main.items \
+                WHERE id > ?2 AND last_used_at IS NULL AND deleted_at IS NULL)",
+            params![lo + offset, hi + offset],
+        )?;
+    }
+
+    let (collection_offset, position_offset): (i64, i64) = tx.query_row(
+        "SELECT COALESCE(max(id), 0), COALESCE(max(position) + 1, 0) FROM main.collections",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    tx.execute_batch(
+        "CREATE TEMP TABLE collection_map (b_id INTEGER PRIMARY KEY, m_id INTEGER NOT NULL); \
+         INSERT INTO collection_map SELECT bc.id, mc.id FROM b.collections bc \
+           JOIN main.collections mc ON mc.uuid = bc.uuid;",
+    )?;
+    let collections = tx.execute(
+        "INSERT INTO main.collections (id, uuid, name, color, position, created_at) \
+         SELECT id + ?1, uuid, name, color, position + ?2, created_at FROM b.collections \
+         WHERE id NOT IN (SELECT b_id FROM collection_map)",
+        params![collection_offset, position_offset],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO collection_map SELECT id, id + ?1 FROM b.collections",
+        params![collection_offset],
+    )?;
+    tx.execute_batch(
+        "INSERT OR IGNORE INTO main.collection_items (collection_id, item_id, position, added_at) \
+           SELECT cm.m_id, im.m_id, bci.position, bci.added_at FROM b.collection_items bci \
+           JOIN collection_map cm ON cm.b_id = bci.collection_id \
+           JOIN item_map im ON im.b_id = bci.item_id; \
+         INSERT OR IGNORE INTO main.apps (bundle_id, name, last_seen_at) \
+           SELECT bundle_id, name, last_seen_at FROM b.apps; \
+         INSERT OR IGNORE INTO main.blobs (id, size_bytes, mime, created_at, refcount) \
+           SELECT id, size_bytes, mime, created_at, 0 FROM b.blobs; \
+         DROP TABLE temp.item_map; DROP TABLE temp.collection_map;",
+    )?;
+    recount_blobs(&tx)?;
+    tx.commit()?;
+    Ok(MergeReport { items, collections })
 }
 
 /// Removes blob rows and files with a zero refcount, plus their thumbnails.

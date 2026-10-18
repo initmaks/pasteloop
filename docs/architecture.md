@@ -131,6 +131,35 @@ releases their GPU atlas space. The preview window shows large images at up to 1
 hide, the SQLite page caches are shrunk and free heap pages are returned to the system.
 Idle CPU with capture on is effectively zero.
 
+## Backup to iCloud Drive
+
+`backup.rs` keeps one folder per library under `iCloud Drive/PasteLoop/`:
+
+- `history.sqlite.lzfse`: a `VACUUM INTO` copy of the database with deleted items removed and
+  the search index emptied, compressed with LZFSE (Apple's Compression framework, streamed).
+  On a 110k-item library that is 36 MB, down from a 320 MB database. It is built next to the
+  live database and renamed into iCloud Drive, so iCloud never sees a partial file.
+- `blobs/`: the blob files. They are content-addressed and never change, so each one uploads
+  once; files the new snapshot no longer uses are pruned after it is in place.
+- `settings.json` and `manifest.json` (library id, device, item count, time).
+
+The live database never sits in iCloud Drive, because syncing a file SQLite is writing to
+corrupts it.
+
+A worker thread at utility priority checks every five minutes. A change fingerprint (counts and
+latest timestamps of items, recognized text, link titles, deletions, collections) says whether
+anything is not yet backed up. A backup runs after 30 minutes without changes, after 5 when
+items were removed, at least every 6 hours while changes keep coming, and before quitting (up
+to 20 seconds). A first backup copies every blob; later ones take a few seconds.
+
+Restore: a library younger than 14 days that finds a backup of another library more than
+twice its size merges it in (`Store::merge_snapshot`). Items already present (same id or same
+content) are skipped. The rest go below the lowest local id, since the backup is older, so ids
+keep following time, and the search index fills in through the insert triggers. Collections,
+memberships, apps, and blob rows come along, blob files are copied (iCloud downloads them on
+read), and the library adopts the backup's folder so the next backup continues there. The age
+limit keeps two Macs in daily use from folding their histories into each other.
+
 ## Import from the Paste app
 
 `import.rs` opens the Paste app's Core Data store read-only. Each clip's pasteboard payload

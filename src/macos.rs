@@ -815,6 +815,88 @@ pub fn zlib_decode(src: &[u8]) -> Option<Vec<u8>> {
     compression_decode(src, COMPRESSION_ZLIB)
 }
 
+/// Compresses (`encode`) or decompresses everything `input` yields into `output` with LZFSE,
+/// streaming in 64 KB chunks so memory stays flat whatever the size.
+pub fn lzfse_stream(
+    input: &mut dyn std::io::Read,
+    output: &mut dyn std::io::Write,
+    encode: bool,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    #[repr(C)]
+    struct CompressionStream {
+        dst_ptr: *mut u8,
+        dst_size: usize,
+        src_ptr: *const u8,
+        src_size: usize,
+        state: *mut c_void,
+    }
+    const STATUS_OK: i32 = 0;
+    const STATUS_END: i32 = 1;
+    const FLAG_FINALIZE: i32 = 1;
+    // SAFETY: the libcompression streaming API, declared with its C signatures.
+    #[link(name = "compression")]
+    unsafe extern "C" {
+        fn compression_stream_init(
+            stream: *mut CompressionStream,
+            operation: i32,
+            algorithm: i32,
+        ) -> i32;
+        fn compression_stream_process(stream: *mut CompressionStream, flags: i32) -> i32;
+        fn compression_stream_destroy(stream: *mut CompressionStream) -> i32;
+    }
+    let mut stream = CompressionStream {
+        dst_ptr: std::ptr::null_mut(),
+        dst_size: 0,
+        src_ptr: std::ptr::null(),
+        src_size: 0,
+        state: std::ptr::null_mut(),
+    };
+    let operation = if encode { 0 } else { 1 };
+    // SAFETY: `stream` is a valid, exclusively borrowed struct for init to fill in.
+    if unsafe { compression_stream_init(&mut stream, operation, COMPRESSION_LZFSE) } != STATUS_OK {
+        return Err(Error::other("compression_stream_init failed"));
+    }
+    let mut src = vec![0u8; 64 * 1024];
+    let mut dst = vec![0u8; 64 * 1024];
+    let mut eof = false;
+    let result = loop {
+        if stream.src_size == 0 && !eof {
+            let n = match input.read(&mut src) {
+                Ok(n) => n,
+                Err(err) => break Err(err),
+            };
+            eof = n == 0;
+            stream.src_ptr = src.as_ptr();
+            stream.src_size = n;
+        }
+        stream.dst_ptr = dst.as_mut_ptr();
+        stream.dst_size = dst.len();
+        let flags = if eof { FLAG_FINALIZE } else { 0 };
+        // SAFETY: src_ptr/src_size describe unread bytes of `src` and dst_ptr/dst_size the whole
+        // of `dst`; both buffers outlive the call and are not reallocated in this loop.
+        let status = unsafe { compression_stream_process(&mut stream, flags) };
+        let produced = dst.len() - stream.dst_size;
+        if let Err(err) = output.write_all(&dst[..produced]) {
+            break Err(err);
+        }
+        match status {
+            STATUS_END => break Ok(()),
+            STATUS_OK if eof && produced == 0 && stream.src_size == 0 => {
+                break Err(Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "truncated LZFSE stream",
+                ));
+            }
+            STATUS_OK => {}
+            _ => break Err(Error::new(ErrorKind::InvalidData, "LZFSE stream error")),
+        }
+    };
+    // SAFETY: `stream` was initialized above and is destroyed exactly once.
+    unsafe { compression_stream_destroy(&mut stream) };
+    result
+}
+
 /// Decompresses `src` with an Apple Compression algorithm into a right-sized buffer.
 fn compression_decode(src: &[u8], algorithm: i32) -> Option<Vec<u8>> {
     // SAFETY: `compression_decode_buffer` from libcompression; declared with its C signature.
@@ -1471,4 +1553,64 @@ pub fn log_environment() {
         accessibility_trusted(),
         reduce_motion()
     );
+}
+
+// ---- iCloud Drive files and background threads ---------------------------------------------
+
+/// Asks iCloud Drive to download a file (or a folder's contents) that may only be a placeholder
+/// on this Mac. Returns immediately; reads of the file wait for the download.
+pub fn start_icloud_download(path: &std::path::Path) -> bool {
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    objc2_foundation::NSFileManager::defaultManager()
+        .startDownloadingUbiquitousItemAtURL_error(&url)
+        .is_ok()
+}
+
+/// Whether iCloud Drive has finished uploading the file: `None` when the file is not in iCloud
+/// Drive or its state is unknown.
+pub fn icloud_uploaded(path: &std::path::Path) -> Option<bool> {
+    use objc2_foundation::{NSArray, NSURLUbiquitousItemIsUploadedKey};
+    let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+    // SAFETY: an extern static NSString provided by Foundation.
+    let key = unsafe { NSURLUbiquitousItemIsUploadedKey };
+    let values = url
+        .resourceValuesForKeys_error(&NSArray::from_slice(&[key]))
+        .ok()?;
+    let value = values.objectForKey(key)?;
+    value.downcast_ref::<NSNumber>().map(|n| n.boolValue())
+}
+
+/// Lowers the calling thread to the utility QoS and lets it read iCloud Drive files that are
+/// only placeholders on this Mac (the read downloads them). For long background jobs.
+pub fn become_background_file_worker() {
+    const QOS_CLASS_UTILITY: u32 = 0x11;
+    const IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES: i32 = 3;
+    const IOPOL_SCOPE_THREAD: i32 = 1;
+    const IOPOL_MATERIALIZE_DATALESS_FILES_ON: i32 = 2;
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+        fn setiopolicy_np(iotype: i32, scope: i32, policy: i32) -> i32;
+    }
+    // SAFETY: both calls only change attributes of the calling thread.
+    let (qos, io) = unsafe {
+        (
+            pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0),
+            setiopolicy_np(
+                IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES,
+                IOPOL_SCOPE_THREAD,
+                IOPOL_MATERIALIZE_DATALESS_FILES_ON,
+            ),
+        )
+    };
+    if qos != 0 || io != 0 {
+        warn!("background worker setup: qos={qos} iopolicy={io}");
+    }
+}
+
+/// This Mac's network name without `.local`, to label its backup folder.
+pub fn host_name() -> String {
+    let name = objc2_foundation::NSProcessInfo::processInfo()
+        .hostName()
+        .to_string();
+    name.trim_end_matches(".local").to_string()
 }

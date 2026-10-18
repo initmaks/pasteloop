@@ -5,6 +5,7 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 ## Unreleased
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
+- Optional backup to iCloud Drive, asked about once on first launch. It runs on its own after changes settle and before quitting, and a new Mac or a fresh macOS install restores history, collections, and settings automatically. The live database never syncs; a compressed snapshot (36 MB for 110k items) and the stored files do. `pasteloop backup` and `pasteloop restore --from <folder>` do the same from a terminal.
 - Return now pastes text without its formatting, and Shift-Return pastes it with formatting. Images and files still paste as themselves on Return and as paths on Shift-Return. Settings → General → Paste text switches the default back. The context menu names the second paste for each kind of card ("Paste with Formatting", "Paste as Path").
 
 ## 1.0.0 — 2026-09-27

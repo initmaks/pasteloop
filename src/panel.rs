@@ -169,6 +169,7 @@ struct ContextMenu {
 
 enum Dialog {
     LaunchAtLogin,
+    Backup,
     ConfirmErase { count: i64 },
     ConfirmDeleteCollection { id: i64, name: String },
     Accessibility,
@@ -372,11 +373,14 @@ impl PanelView {
         self.context_menu = None;
         self.quick_paste_held = false;
         // Ask once whether to open at login; only meaningful from the .app bundle.
-        if self.dialog.is_none()
-            && self.state.read(cx).settings.launch_at_login.is_none()
-            && macos::running_from_bundle()
-        {
-            self.dialog = Some(Dialog::LaunchAtLogin);
+        // The next time, whether to back up to iCloud Drive.
+        if self.dialog.is_none() && macos::running_from_bundle() {
+            let settings = &self.state.read(cx).settings;
+            if settings.launch_at_login.is_none() {
+                self.dialog = Some(Dialog::LaunchAtLogin);
+            } else if settings.icloud_backup.is_none() && crate::backup::root().is_some() {
+                self.dialog = Some(Dialog::Backup);
+            }
         }
         let resumed = self.state.update(cx, |s, cx| {
             s.target_app = front;
@@ -2901,6 +2905,31 @@ impl PanelView {
                                 cx.notify();
                             });
                             this.expire_toast_later(cx);
+                            cx.notify();
+                        })),
+                ),
+            Dialog::Backup => body
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Back up your history to iCloud Drive?"))
+                .child("PasteLoop keeps a copy in iCloud Drive → PasteLoop and restores it automatically on a new Mac or after reinstalling macOS. iCloud Drive is encrypted, but Apple holds the key unless Advanced Data Protection is on. You can change this later in Settings.")
+                .child(
+                    buttons
+                        .child(self.dialog_button("backup-no", "Not Now", false, cx, |this, _, cx| {
+                            this.dialog = None;
+                            this.state.update(cx, |s, _| {
+                                s.settings.icloud_backup = Some(false);
+                                s.save_settings();
+                            });
+                            cx.notify();
+                        }))
+                        .child(self.dialog_button("backup-yes", "Back Up", true, cx, |this, _, cx| {
+                            this.dialog = None;
+                            info!("iCloud Drive backup turned on");
+                            this.state.update(cx, |s, cx| {
+                                s.settings.icloud_backup = Some(true);
+                                s.save_settings();
+                                s.backup.requested = true;
+                                cx.notify();
+                            });
                             cx.notify();
                         })),
                 ),

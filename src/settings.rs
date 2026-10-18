@@ -124,6 +124,9 @@ pub struct Settings {
     pub retention: Retention,
     /// `None` until the user has answered the launch-at-login question once.
     pub launch_at_login: Option<bool>,
+    /// Back up to iCloud Drive and restore from it on a new Mac. `None` until the user has
+    /// answered the first-launch question.
+    pub icloud_backup: Option<bool>,
     pub panel_height: f32,
     pub card_width: f32,
     pub card_max_height: f32,
@@ -149,6 +152,7 @@ impl Default for Settings {
             paste_plain_text: true,
             retention: Retention::Month,
             launch_at_login: None,
+            icloud_backup: None,
             panel_height: DEFAULT_PANEL_HEIGHT,
             card_width: DEFAULT_CARD_WIDTH,
             card_max_height: DEFAULT_CARD_MAX_HEIGHT,

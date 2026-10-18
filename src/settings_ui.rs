@@ -67,6 +67,8 @@ pub enum SettingsEvent {
     HotkeysChanged,
     /// The user confirmed erasing history.
     EraseHistory,
+    /// Back up to iCloud Drive at the next check.
+    BackUpNow,
     /// The Settings window gained (`true`) or lost (`false`) focus; the live bar follows it.
     BarPreview(bool),
 }
@@ -430,6 +432,50 @@ impl SettingsView {
                 ),
             ),
         );
+        col = col.child(self.row(
+            "Back up to iCloud Drive",
+            self.toggle(
+                "icloud-backup",
+                s.icloud_backup == Some(true),
+                cx,
+                |this, on, cx| this.edit(cx, |s| s.icloud_backup = Some(on)),
+            ),
+        ));
+        {
+            let backup = &self.state.read(cx).backup;
+            let summary = backup.summary(crate::store::now_ms());
+            let busy = matches!(
+                backup.status,
+                crate::state::BackupStatus::Running | crate::state::BackupStatus::Restoring
+            );
+            let on = s.icloud_backup == Some(true);
+            col = col.child(
+                div()
+                    .pb(px(4.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .text_size(px(11.))
+                            .text_color(theme.text_secondary)
+                            .child(summary)
+                            .when(on, |d| {
+                                d.child("A new Mac, or this one after reinstalling macOS, restores it automatically.")
+                            }),
+                    )
+                    .when(on && !busy, |d| {
+                        d.child(self.button("backup-now".into(), "Back Up Now", false, cx, |_, _, cx| {
+                            cx.emit(SettingsEvent::BackUpNow)
+                        }))
+                    }),
+            );
+        }
         if let Some((retention, count)) = self.retention_pending {
             col = col.child(
                 div()

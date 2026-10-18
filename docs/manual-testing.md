@@ -122,6 +122,19 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 2 | Grant Accessibility to PasteLoop.app, rebuild with `just bundle` (dev certificate trusted) | Permission survives the rebuild | — |
 | 3 | `pasteloop recent 5`, `pasteloop search rust`, `pasteloop export --json /tmp/x.json` | JSON output; the GUI shows items added by `pasteloop add` within 2 s | — |
 
+## Backup to iCloud Drive
+
+| # | Steps | Expected | Log |
+|---|---|---|---|
+| 1 | Fresh install from the bundle: answer the login question, open the bar again | "Back up your history to iCloud Drive?"; Back Up turns it on | `iCloud Drive backup turned on` |
+| 2 | With backup on, wait for the first check (20 s after launch) | macOS asks once for access to iCloud Drive; after Allow, `iCloud Drive/PasteLoop/<Mac name> (…)` appears with `history.sqlite.lzfse`, `blobs/`, `manifest.json` | `backup: N items, … to …` |
+| 3 | Settings → General | The switch is on; the line reads "Last backup: … · N items · uploading", then "· in iCloud" | — |
+| 4 | Copy something, then wait 30 minutes (or press Back Up Now) | A new backup with 0 or 1 blobs copied, in seconds | `backup: …` |
+| 5 | Delete an image card, wait 5 minutes | The next backup prunes its blob | `… 1 pruned …` |
+| 6 | Copy something and quit within a minute | Quitting waits for the backup | `backed up before quitting` |
+| 7 | New Mac, or a test user account signed in to the same iCloud: install, turn backup on | History, collections, and settings come back; toast "Restored N items from iCloud Drive"; image cards fill in as files download | `restoring N items backed up on …`, `restore: merged N items …` |
+| 8 | System Settings → Privacy & Security → Files and Folders: turn iCloud Drive off for PasteLoop | Settings shows "Last backup failed: allow PasteLoop under …" | `backup: access to iCloud Drive denied` |
+
 ## Measuring the budgets
 
 | Metric | How |

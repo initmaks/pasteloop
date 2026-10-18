@@ -2,6 +2,7 @@
 //! the CLI can reach the store; `main.rs` only calls [`run`]. This file also owns app setup:
 //! hotkeys, status item wiring, the pasteboard poller, and periodic maintenance.
 
+pub mod backup;
 pub mod cards;
 pub mod cli;
 pub mod clipboard;
@@ -19,6 +20,7 @@ pub mod store;
 pub mod text_input;
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -28,7 +30,7 @@ use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui::{
-    App, AppContext as _, AssetSource, Bounds, Entity, Global, KeyBinding, SharedString,
+    App, AppContext as _, AssetSource, AsyncApp, Bounds, Entity, Global, KeyBinding, SharedString,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions, point, px,
     size,
 };
@@ -39,7 +41,7 @@ use crate::clipboard::{CaptureRules, Skip};
 use crate::macos::{StatusCommand, StatusItem, StatusShortcuts};
 use crate::panel::{PanelEvent, PanelView};
 use crate::settings::Settings;
-use crate::state::AppState;
+use crate::state::{AppState, BackupStatus};
 use crate::store::Store;
 use gpui::Focusable as _;
 
@@ -100,7 +102,7 @@ pub fn run() {
     if let Some(sub) = args.first() {
         match sub.as_str() {
             "search" | "get" | "recent" | "add" | "export" | "stats" | "ocr" | "seed"
-            | "import-paste" => {
+            | "import-paste" | "backup" | "restore" => {
                 init_logging(false);
                 if !settings::adopt_legacy_data_dir() {
                     eprintln!("{OLD_BUILD_RUNNING}");
@@ -275,7 +277,7 @@ fn start(launched: Instant, cx: &mut App) -> Result<()> {
     let panel_view = panel.update(cx, |_, _, cx| cx.entity())?;
     cx.subscribe(&panel_view, |_, event: &PanelEvent, cx| match event {
         PanelEvent::OpenSettings => open_settings_window(cx),
-        PanelEvent::Quit => cx.quit(),
+        PanelEvent::Quit => quit_after_backup(cx),
         PanelEvent::PauseToggled => refresh_status_paused(cx),
     })
     .detach();
@@ -285,6 +287,7 @@ fn start(launched: Instant, cx: &mut App) -> Result<()> {
     let link_tx = spawn_link_metadata_receiver(state.clone(), cx);
     spawn_poller(state.clone(), link_tx, cx);
     spawn_maintenance(state.clone(), panel, cx);
+    spawn_backup(state.clone(), panel, cx);
     watch_outside_clicks(panel, cx);
     info!(
         "ready after {:.1} ms",
@@ -462,7 +465,7 @@ fn spawn_status_commands(
                 StatusCommand::About => {
                     macos::open_url("https://github.com/initmaks/pasteloop");
                 }
-                StatusCommand::Quit => cx.update(|cx| cx.quit()),
+                StatusCommand::Quit => cx.update(quit_after_backup),
                 StatusCommand::ScreenParametersChanged => panel::reanchor(panel, cx).await,
             }
         }
@@ -586,26 +589,18 @@ fn on_settings_event(
     settings_ui::log_change(&settings);
     match event {
         settings_ui::SettingsEvent::Changed => {
-            cx.clear_key_bindings();
-            cx.bind_keys(text_input::key_bindings());
-            cx.bind_keys(queue::key_bindings());
-            cx.bind_keys(panel_key_bindings(&settings));
-            let hide = settings.hide_from_screen_sharing;
-            panel
-                .update(cx, |view, _, _| view.native().set_hidden_from_capture(hide))
-                .ok();
-            if let Some(queue) = cx.try_global::<queue::QueueWindow>().map(|w| w.0) {
-                queue
-                    .update(cx, |view, _, _| view.native().set_hidden_from_capture(hide))
-                    .ok();
-            }
-            if let Some(preview) = cx.try_global::<preview::PreviewWindow>().map(|w| w.0) {
-                preview
-                    .update(cx, |view, _, _| view.native().set_hidden_from_capture(hide))
-                    .ok();
-            }
+            apply_settings(&settings, panel, cx);
             state.update(cx, |s, cx| {
                 s.sweep();
+                if s.settings.icloud_backup == Some(true) && s.backup.status == BackupStatus::Off {
+                    s.backup.requested = true; // just turned on: back up now
+                }
+                cx.notify();
+            });
+        }
+        settings_ui::SettingsEvent::BackUpNow => {
+            state.update(cx, |s, cx| {
+                s.backup.requested = true;
                 cx.notify();
             });
         }
@@ -624,6 +619,329 @@ fn on_settings_event(
         // Handled above, before this match.
         settings_ui::SettingsEvent::BarPreview(_) => {}
     }
+}
+
+/// Rebinds the configurable keys and applies the screen-sharing setting to every window.
+fn apply_settings(settings: &Settings, panel: WindowHandle<PanelView>, cx: &mut App) {
+    cx.clear_key_bindings();
+    cx.bind_keys(text_input::key_bindings());
+    cx.bind_keys(queue::key_bindings());
+    cx.bind_keys(panel_key_bindings(settings));
+    let hide = settings.hide_from_screen_sharing;
+    panel
+        .update(cx, |view, _, _| view.native().set_hidden_from_capture(hide))
+        .ok();
+    if let Some(queue) = cx.try_global::<queue::QueueWindow>().map(|w| w.0) {
+        queue
+            .update(cx, |view, _, _| view.native().set_hidden_from_capture(hide))
+            .ok();
+    }
+    if let Some(preview) = cx.try_global::<preview::PreviewWindow>().map(|w| w.0) {
+        preview
+            .update(cx, |view, _, _| view.native().set_hidden_from_capture(hide))
+            .ok();
+    }
+}
+
+/// First check after launch, then every few minutes (see `backup` for when one is due).
+const BACKUP_FIRST_CHECK: Duration = Duration::from_secs(20);
+const BACKUP_CHECK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How long quitting waits for a final backup.
+const BACKUP_AT_QUIT: Duration = Duration::from_secs(20);
+
+/// What the backup loop's worker found.
+enum BackupProbe {
+    Unavailable,
+    Denied,
+    Restore(PathBuf, backup::Manifest),
+    Changes(String, i64),
+}
+
+/// Backs up to iCloud Drive once changes settle, and restores a backup on a new Mac.
+fn spawn_backup(state: Entity<AppState>, panel: WindowHandle<PanelView>, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let mut next_check = Instant::now() + BACKUP_FIRST_CHECK;
+        let mut next_upload_poll = Instant::now();
+        loop {
+            cx.background_executor().timer(Duration::from_secs(5)).await;
+            let (enabled, requested, store, uploading) = cx.update(|cx| {
+                let s = state.read(cx);
+                let uploading = (s.backup.uploaded == Some(false))
+                    .then(|| s.backup.snapshot.clone())
+                    .flatten();
+                (
+                    s.settings.icloud_backup == Some(true),
+                    s.backup.requested,
+                    Arc::clone(&s.store),
+                    uploading,
+                )
+            });
+            if !enabled {
+                set_backup_status(&state, BackupStatus::Off, cx);
+                continue;
+            }
+            let Some(root) = backup::root() else {
+                set_backup_status(&state, BackupStatus::Unavailable, cx);
+                continue;
+            };
+            if let Some(snapshot) = uploading
+                && Instant::now() >= next_upload_poll
+            {
+                next_upload_poll = Instant::now() + Duration::from_secs(30);
+                let uploaded = macos::icloud_uploaded(&snapshot);
+                cx.update(|cx| {
+                    state.update(cx, |s, cx| {
+                        s.backup.uploaded = uploaded;
+                        cx.notify();
+                    })
+                });
+            }
+            if !requested && Instant::now() < next_check {
+                continue;
+            }
+            next_check = Instant::now() + BACKUP_CHECK_EVERY;
+            check_backup(&state, store, root, panel, cx).await;
+        }
+    })
+    .detach();
+}
+
+/// One backup check: restore a backup this new library should take in, else back up when due.
+async fn check_backup(
+    state: &Entity<AppState>,
+    store: Arc<Store>,
+    root: PathBuf,
+    panel: WindowHandle<PanelView>,
+    cx: &mut AsyncApp,
+) {
+    let probe = {
+        let (store, root) = (Arc::clone(&store), root.clone());
+        backup::run_worker(move || -> Result<BackupProbe> {
+            match backup::access(&root) {
+                backup::Access::Ready => {}
+                backup::Access::Off => return Ok(BackupProbe::Unavailable),
+                backup::Access::Denied => return Ok(BackupProbe::Denied),
+            }
+            if let Some((folder, manifest)) = backup::restore_candidate(&store, &root)? {
+                return Ok(BackupProbe::Restore(folder, manifest));
+            }
+            let (fingerprint, live) = store.fingerprint()?;
+            Ok(BackupProbe::Changes(fingerprint, live))
+        })
+        .await
+    };
+    match probe {
+        Ok(Ok(BackupProbe::Unavailable)) => set_backup_status(state, BackupStatus::Unavailable, cx),
+        Ok(Ok(BackupProbe::Denied)) => {
+            warn!("backup: access to iCloud Drive denied");
+            let hint = "allow PasteLoop under System Settings → Privacy & Security → Files and \
+                        Folders → iCloud Drive";
+            set_backup_status(state, BackupStatus::Failed(hint.to_string()), cx)
+        }
+        Ok(Ok(BackupProbe::Restore(folder, manifest))) => {
+            restore_backup(state, store, root, folder, manifest, panel, cx).await
+        }
+        Ok(Ok(BackupProbe::Changes(fingerprint, live))) => {
+            let due = cx.update(|cx| {
+                state.update(cx, |s, _| {
+                    if matches!(
+                        s.backup.status,
+                        BackupStatus::Off | BackupStatus::Unavailable
+                    ) {
+                        s.backup.status = BackupStatus::Idle;
+                    }
+                    s.backup.observe(fingerprint.clone(), live, Instant::now())
+                })
+            });
+            if due {
+                run_backup(state, store, root, fingerprint, cx).await;
+            }
+        }
+        Ok(Err(err)) => {
+            warn!("backup check failed: {err:#}");
+            set_backup_status(state, BackupStatus::Failed(format!("{err:#}")), cx);
+        }
+        Err(_) => warn!("backup check worker stopped"),
+    }
+}
+
+/// Writes a backup and records it; `fingerprint` is the library as of just before.
+async fn run_backup(
+    state: &Entity<AppState>,
+    store: Arc<Store>,
+    root: PathBuf,
+    fingerprint: String,
+    cx: &mut AsyncApp,
+) {
+    cx.update(|cx| {
+        state.update(cx, |s, cx| {
+            s.backup.status = BackupStatus::Running;
+            s.backup.requested = false;
+            cx.notify();
+        })
+    });
+    let stamp = fingerprint.clone();
+    let result = backup::run_worker(move || -> Result<backup::BackupReport> {
+        let report = backup::back_up(&store, &settings::settings_path(), &root)?;
+        store.set_meta("backup_at", &report.manifest.created_at.to_string())?;
+        store.set_meta("backup_items", &report.manifest.items.to_string())?;
+        store.set_meta("backup_stamp", &stamp)?;
+        Ok(report)
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) => {
+            info!(
+                "backup: {} items, {} KB snapshot, {} blobs copied, {} pruned, in {:.1} s to {}",
+                report.manifest.items,
+                report.snapshot_bytes / 1024,
+                report.copied_blobs,
+                report.pruned_blobs,
+                report.elapsed.as_secs_f64(),
+                report.folder.display()
+            );
+            let snapshot = report.folder.join("history.sqlite.lzfse");
+            let uploaded = macos::icloud_uploaded(&snapshot);
+            cx.update(|cx| {
+                state.update(cx, |s, cx| {
+                    let b = &mut s.backup;
+                    b.status = BackupStatus::Idle;
+                    b.last_at = Some(report.manifest.created_at);
+                    b.last_items = report.manifest.items;
+                    b.backed_up = Some(fingerprint);
+                    b.changed_at = None;
+                    b.deleted = false;
+                    b.snapshot = Some(snapshot);
+                    b.uploaded = uploaded;
+                    cx.notify();
+                })
+            });
+        }
+        Ok(Err(err)) => {
+            warn!("backup failed: {err:#}");
+            set_backup_status(state, BackupStatus::Failed(format!("{err:#}")), cx);
+        }
+        Err(_) => warn!("backup worker stopped"),
+    }
+}
+
+/// Restores a backup into this (new) library, then applies its settings and shows the result.
+async fn restore_backup(
+    state: &Entity<AppState>,
+    store: Arc<Store>,
+    root: PathBuf,
+    folder: PathBuf,
+    manifest: backup::Manifest,
+    panel: WindowHandle<PanelView>,
+    cx: &mut AsyncApp,
+) {
+    info!(
+        "restoring {} items backed up on {} from {}",
+        manifest.items,
+        manifest.device,
+        folder.display()
+    );
+    set_backup_status(state, BackupStatus::Restoring, cx);
+    let result =
+        backup::run_worker(move || backup::restore(&store, &root, &folder, &manifest)).await;
+    match result {
+        Ok(Ok(report)) => {
+            info!(
+                "restore: merged {} items and {} collections; {} blob files still downloading",
+                report.merged.items, report.merged.collections, report.missing_blobs
+            );
+            cx.update(|cx| {
+                let settings = state.update(cx, |s, cx| {
+                    if let Some(mut restored) = report.settings {
+                        restored.launch_at_login = s.settings.launch_at_login;
+                        restored.icloud_backup = s.settings.icloud_backup;
+                        s.settings = restored;
+                        s.save_settings();
+                    }
+                    s.backup.status = BackupStatus::Idle;
+                    s.backup.requested = true;
+                    s.reload_list();
+                    s.refresh_collections();
+                    s.refresh_apps();
+                    s.show_toast(format!(
+                        "Restored {} items from iCloud Drive",
+                        report.merged.items
+                    ));
+                    cx.notify();
+                    s.settings.clone()
+                });
+                apply_settings(&settings, panel, cx);
+                if let Err(err) = register_hotkeys(&settings, panel, state.clone(), cx) {
+                    warn!("hotkey registration failed after restore: {err:#}");
+                }
+            });
+        }
+        Ok(Err(err)) => {
+            warn!("restore failed: {err:#}");
+            set_backup_status(state, BackupStatus::Failed(format!("{err:#}")), cx);
+        }
+        Err(_) => warn!("restore worker stopped"),
+    }
+}
+
+fn set_backup_status(state: &Entity<AppState>, status: BackupStatus, cx: &mut AsyncApp) {
+    cx.update(|cx| {
+        state.update(cx, |s, cx| {
+            if s.backup.status != status {
+                s.backup.status = status;
+                cx.notify();
+            }
+        })
+    });
+}
+
+/// Quits, first backing up changes that are not in iCloud Drive yet (waiting at most
+/// `BACKUP_AT_QUIT`).
+fn quit_after_backup(cx: &mut App) {
+    let state = panel_window(cx).and_then(|p| p.update(cx, |v, _, _| v.state().clone()).ok());
+    let Some(state) = state else {
+        cx.quit();
+        return;
+    };
+    let (enabled, store, backed_up) = {
+        let s = state.read(cx);
+        (
+            s.settings.icloud_backup == Some(true),
+            Arc::clone(&s.store),
+            s.backup.backed_up.clone(),
+        )
+    };
+    let root =
+        backup::root().filter(|root| enabled && backup::access(root) == backup::Access::Ready);
+    let Some(root) = root else {
+        cx.quit();
+        return;
+    };
+    let job = backup::run_worker(move || -> Result<bool> {
+        let (fingerprint, _) = store.fingerprint()?;
+        if backed_up.as_deref() == Some(fingerprint.as_str()) {
+            return Ok(false);
+        }
+        let report = backup::back_up(&store, &settings::settings_path(), &root)?;
+        store.set_meta("backup_at", &report.manifest.created_at.to_string())?;
+        store.set_meta("backup_items", &report.manifest.items.to_string())?;
+        store.set_meta("backup_stamp", &fingerprint)?;
+        Ok(true)
+    });
+    cx.spawn(async move |cx| {
+        let timeout = cx.background_executor().timer(BACKUP_AT_QUIT);
+        match futures::future::select(job, timeout).await {
+            futures::future::Either::Left((Ok(Ok(true)), _)) => info!("backed up before quitting"),
+            futures::future::Either::Left((Ok(Ok(false)), _)) => {}
+            futures::future::Either::Left((Ok(Err(err)), _)) => {
+                warn!("backup before quitting failed: {err:#}")
+            }
+            futures::future::Either::Left((Err(_), _)) => warn!("backup worker stopped"),
+            futures::future::Either::Right(_) => warn!("backup before quitting timed out"),
+        }
+        cx.update(|cx| cx.quit());
+    })
+    .detach();
 }
 
 /// Hides the panel on any click outside our windows (see `OutsideClickMonitor`).

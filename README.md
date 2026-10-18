@@ -24,6 +24,8 @@ no cloud: your history is a plain SQLite file you can script.
   items, delete with undo, drag cards into other apps.
 - Keep history from one day to forever, pause capture, ignore applications. The bar is hidden
   from screen sharing by default.
+- Optional backup to iCloud Drive. A new Mac, or this one after reinstalling macOS, restores
+  your history and settings automatically.
 - A `pasteloop` command line for scripts: search, get, recent, add, export.
 
 Built with [GPUI](https://gpui.rs), the UI framework of the Zed editor, and the `objc2`
@@ -110,13 +112,17 @@ the app runs; the app picks up writes from the CLI within two seconds.
 | Database, blobs, thumbnails, `settings.json` | `~/Library/Application Support/PasteLoop/` |
 | Log | `~/Library/Logs/PasteLoop/pasteloop.log` |
 | Files handed to other apps (images as files, plain-text image paths) | `~/Library/Caches/PasteLoop/` |
+| Backup, when turned on | `iCloud Drive/PasteLoop/<this Mac's name>/` |
 
 Set `PASTELOOP_DATA_DIR` to use another data directory.
 
 ## Privacy
 
-Everything stays on your Mac. The only network use is link previews, off by default. Clipboard
-contents are never logged. Concealed and transient pasteboard entries (the convention password
+Everything stays on your Mac unless you turn on one of two things, both off until you choose:
+link previews, and the iCloud Drive backup. PasteLoop asks about the backup once, on first
+launch. The backup leaves out deleted items, and items you delete leave it within minutes.
+iCloud Drive is encrypted, but Apple holds the keys unless you turn on Advanced Data
+Protection for your Apple Account. Clipboard contents are never logged. Concealed and transient pasteboard entries (the convention password
 managers follow) are ignored, and you can ignore whole applications. The bar is excluded from
 screen sharing and screenshots unless you turn that off.
 
