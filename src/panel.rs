@@ -167,13 +167,19 @@ struct ContextMenu {
     open_submenu: Option<usize>,
 }
 
+/// A paste waiting on a permission dialog; "Copy Only" or "Not Now" completes it.
+struct PendingPaste {
+    items: Vec<Item>,
+    alternate: bool,
+}
+
 enum Dialog {
     LaunchAtLogin,
     Backup,
     ConfirmErase { count: i64 },
     ConfirmDeleteCollection { id: i64, name: String },
-    Accessibility,
-    Relaunch,
+    Accessibility(PendingPaste),
+    Relaunch(Option<PendingPaste>),
     CollectionForm { id: Option<i64>, color: String },
 }
 
@@ -420,7 +426,7 @@ impl PanelView {
             return false;
         }
         self.state.update(cx, |s, _| s.relaunch_prompted = true);
-        self.dialog = Some(Dialog::Relaunch);
+        self.dialog = Some(Dialog::Relaunch(None));
         info!("accessibility granted after launch; asking to relaunch");
         cx.notify();
         true
@@ -608,29 +614,44 @@ impl PanelView {
         if items.is_empty() {
             return;
         }
-        let (store, images_as_files, trusted, mode, form) = {
+        // While pasting into apps is not possible yet, every attempt explains why (until the
+        // user turns that off), instead of silently copying and hiding.
+        let (ask, at_launch) = {
+            let s = self.state.read(cx);
+            (
+                s.settings.paste_mode == crate::settings::PasteMode::ActiveApp
+                    && s.settings.ask_for_accessibility,
+                s.accessibility_at_launch,
+            )
+        };
+        if ask && self.dialog.is_none() {
+            let pending = PendingPaste { items, alternate };
+            let trusted = macos::accessibility_trusted();
+            if !trusted || !at_launch {
+                info!("paste needs Accessibility (trusted={trusted}); asking");
+                self.dialog = Some(if trusted {
+                    Dialog::Relaunch(Some(pending))
+                } else {
+                    Dialog::Accessibility(pending)
+                });
+                cx.notify();
+                return;
+            }
+            return self.paste_now(pending.items, pending.alternate, cx);
+        }
+        self.paste_now(items, alternate, cx)
+    }
+
+    /// Pastes (or copies, when pasting into apps is not possible) without asking first.
+    fn paste_now(&mut self, items: Vec<Item>, alternate: bool, cx: &mut Context<Self>) {
+        let (store, images_as_files, form) = {
             let s = self.state.read(cx);
             (
                 Arc::clone(&s.store),
                 s.settings.images_as_files,
-                macos::accessibility_trusted(),
-                s.settings.paste_mode,
                 paste::Form::for_paste(s.settings.paste_plain_text, alternate),
             )
         };
-        if mode == crate::settings::PasteMode::ActiveApp && !trusted {
-            let prompted = self.state.read(cx).accessibility_prompted;
-            if !prompted {
-                self.state
-                    .update(cx, |s, _| s.accessibility_prompted = true);
-                self.dialog = Some(Dialog::Accessibility);
-                cx.notify();
-                return;
-            }
-        }
-        if trusted && self.offer_relaunch(cx) {
-            return;
-        }
         let ids: Vec<i64> = items.iter().map(|i| i.id).collect();
         let plan = paste::plan(&items, &store, form, images_as_files);
         let state = self.state.clone();
@@ -2976,7 +2997,7 @@ impl PanelView {
                             })),
                     )
             }
-            Dialog::Accessibility => body
+            Dialog::Accessibility(_) => body
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Allow PasteLoop to paste for you"))
                 .child(
                     "To paste directly into the app you were using, PasteLoop presses ⌘V on your behalf. \
@@ -2985,10 +3006,21 @@ impl PanelView {
                 )
                 .child(
                     buttons
-                        .child(self.dialog_button("later", "Not Now", false, cx, |this, _, cx| {
-                            this.dialog = None;
-                            let items = this.state.read(cx).selected_items();
-                            this.paste_items(items, false, cx);
+                        .child(self.dialog_button("never", "Don't Ask Again", false, cx, |this, _, cx| {
+                            this.state.update(cx, |s, _| {
+                                s.settings.ask_for_accessibility = false;
+                                s.save_settings();
+                            });
+                            info!("accessibility reminder turned off");
+                            if let Some(Dialog::Accessibility(p)) = this.dialog.take() {
+                                this.paste_now(p.items, p.alternate, cx);
+                            }
+                            cx.notify();
+                        }))
+                        .child(self.dialog_button("later", "Copy Only", false, cx, |this, _, cx| {
+                            if let Some(Dialog::Accessibility(p)) = this.dialog.take() {
+                                this.paste_now(p.items, p.alternate, cx);
+                            }
                             cx.notify();
                         }))
                         .child(self.dialog_button("open", "Open System Settings", true, cx, |this, _, cx| {
@@ -2998,7 +3030,7 @@ impl PanelView {
                             this.hide(cx);
                         })),
                 ),
-            Dialog::Relaunch => body
+            Dialog::Relaunch(_) => body
                 .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("Relaunch PasteLoop to finish enabling paste"))
                 .child(
                     "Accessibility permission was granted after PasteLoop started. macOS only lets an \
@@ -3008,7 +3040,9 @@ impl PanelView {
                 .child(
                     buttons
                         .child(self.dialog_button("relaunch-later", "Not Now", false, cx, |this, _, cx| {
-                            this.dialog = None;
+                            if let Some(Dialog::Relaunch(Some(p))) = this.dialog.take() {
+                                this.paste_now(p.items, p.alternate, cx);
+                            }
                             cx.notify();
                         }))
                         .child(self.dialog_button("relaunch", "Relaunch PasteLoop", true, cx, |this, _, cx| {

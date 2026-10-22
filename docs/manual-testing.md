@@ -18,6 +18,8 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 3 | Copy text in any app | A text card appears first, headed by the source app's name | `captured Text` |
 | 4 | Copy a URL, a `#1A2B3C` color, a screenshot (Shift-Ctrl-Cmd-4), a file in Finder (Cmd-C) | One card each: link with domain, color swatch with hex, image thumbnail with W×H, file with name | `captured Link/Color/Image/File` |
 | 5 | Copy `235442` | Text card, not a color | `captured Text` |
+| 5b | Copy text on an iPhone signed in to the same Apple Account (Handoff on), wait a few seconds | A text card appears; the bar never freezes while macOS fetches it | `pasteboard changed with no types yet; waiting for them`, then `pasteboard types arrived after the change` and `captured Text` |
+| 5c | In Safari, Share → Copy (a link carrying only a URL) | A link card | `captured Link` |
 | 6 | Copy a password from 1Password/Bitwarden/Apple Passwords | No card | `skipped: Concealed` |
 | 7 | Copy the same text twice | One card, moved to the front | `new=false` |
 | 8 | Panel open, press Right/Left, Cmd-Down, then Up (also Home, Cmd-Up), Shift-Right | Selection ring moves; Cmd-Down jumps to the last card; Up scrolls back to the first card and selects it; multi-selection rings | — |
@@ -37,7 +39,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 21 | Menu → Erase History… → Erase | Every card not in a collection goes; collections stay | `erased N items` |
 | 22 | Edit `settings.json` retention to `"day"` and relaunch with items older than a day | Items older than a day are gone | `sweep: expired=N` |
 | 23 | Delete key, then Cmd-Z | Card disappears, then comes back selected | `deleted 1 item(s)` |
-| 24 | Revoke Accessibility, press Return on a card | Explanation sheet with "Open System Settings"; "Not Now" copies with a toast "Copied — press ⌘V" | `outcome=CopiedOnly` |
+| 24 | Revoke Accessibility, press Return on a card, then on another | Each time: the sheet "Allow PasteLoop to paste for you" with Don't Ask Again, Copy Only, Open System Settings. Copy Only copies (Shift-Return still pastes the formatted form); Don't Ask Again copies and stops the sheet until Settings → General turns it back on | `paste needs Accessibility (trusted=false); asking` |
 | 25 | Leave the app idle for a minute with Activity Monitor open | CPU under 0.5 %; RSS under 80 MB | — |
 | 26 | Launch without Accessibility, grant it while the app runs, press the hotkey | Sheet "Relaunch PasteLoop to finish enabling paste"; Return meanwhile copies with a toast; "Relaunch PasteLoop" restarts the app and Return then pastes | `accessibility granted after launch; asking to relaunch`, `relaunching for the Accessibility grant`, then `accessibility=true` at startup |
 | 27 | Search or switch to a collection, arrow to the fourth card, press Escape, press the hotkey again within a minute | Same tab, search, and card as before | `panel opened where it was left` |
@@ -102,7 +104,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 7 | System Settings → Screen Sharing on (or a screen recording) with "show during screen sharing" off | Panel invisible in the recording | — |
 | 8 | Plug in a second display, press the hotkey with the mouse there | Panel appears on that display; unplugging re-anchors an open panel | `status command: ScreenParametersChanged` |
 | 9 | Accessibility → Reduce Motion on | Show/hide only fade; cards do not lift | — |
-| 10 | Cmd-, | Settings window opens and is frontmost; closing it returns focus to the previous app | `settings window opened`, `settings window closed` |
+| 10 | Cmd-, with the bar tall (Settings → Appearance), then with it short | Settings opens frontmost, centered in the space above the bar and never under it; with little room it is shorter, down to its minimum; closing it returns focus to the previous app | `settings window opened`, `settings window closed` |
 | 11 | Settings → Shortcuts → click Activate PasteLoop, press Ctrl-Alt-Cmd-P | Shortcut re-registers immediately | `hotkeys re-registered` |
 | 12 | Settings → General → Keep history → 1 day (with older items) | Confirmation naming the count; Delete and Apply removes them | `sweep: expired=N` |
 
@@ -112,6 +114,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 |---|---|---|---|
 | 1 | Settings → Appearance; drag the top edge of the live bar | The bar follows smoothly, showing empty space below a partial row, and snaps to whole rows on release | `panel height set to N (R row(s))` |
 | 2 | Step Card width and Card height with −/+ | Cards resize on the live bar; changing height grows/shrinks the bar to keep the same row count | — |
+| 3b | Settings → General: add lines to the ignore list until it is longer than nine | The box grows with every line; no line ever sits outside it | — |
 | 3 | Drag the Text size knob, or click the small/large "A" ends | Card and preview text scale together; the percent readout updates; the value persists across relaunch | — |
 
 ## Bundle and command line

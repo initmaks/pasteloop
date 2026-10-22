@@ -44,9 +44,10 @@ Requires an Apple Silicon Mac with macOS 15 or later.
    ```sh
    xattr -dr com.apple.quarantine /Applications/PasteLoop.app
    ```
-3. PasteLoop asks for Accessibility permission (System Settings → Privacy & Security →
-   Accessibility) the first time you paste, so it can press Cmd-V for you. Without it, items
-   are copied and a toast asks you to paste yourself. macOS only honors the permission for a
+3. PasteLoop needs Accessibility permission (System Settings → Privacy & Security →
+   Accessibility) to press Cmd-V for you, and asks each time you paste until it has it. Choose
+   Copy Only to paste yourself this time, or Don't Ask Again to stop the reminder (Settings →
+   General turns it back on). macOS only honors the permission for a
    process that had it when it launched, so PasteLoop offers to relaunch itself after you grant
    it. Each new version is a new signature to macOS: after an update, remove PasteLoop from the
    Accessibility list and add it again.

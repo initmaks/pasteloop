@@ -404,6 +404,17 @@ impl SettingsView {
                 |this, mode, cx| this.edit(cx, |s| s.paste_mode = mode),
             ),
         ));
+        if s.paste_mode == PasteMode::ActiveApp {
+            col = col.child(self.row(
+                "Ask for permission when pasting needs it",
+                self.toggle(
+                    "ask-accessibility",
+                    s.ask_for_accessibility,
+                    cx,
+                    |this, on, cx| this.edit(cx, |s| s.ask_for_accessibility = on),
+                ),
+            ));
+        }
         col = col.child(self.row(
             "Paste text",
             self.segmented(

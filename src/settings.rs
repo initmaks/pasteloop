@@ -121,6 +121,9 @@ pub struct Settings {
     pub paste_mode: PasteMode,
     /// Return pastes text without formatting.
     pub paste_plain_text: bool,
+    /// Explain, on each paste, that pasting into apps needs Accessibility permission while it
+    /// is missing. Off after "Don't Ask Again".
+    pub ask_for_accessibility: bool,
     pub retention: Retention,
     /// `None` until the user has answered the launch-at-login question once.
     pub launch_at_login: Option<bool>,
@@ -150,6 +153,7 @@ impl Default for Settings {
             alternate_modifier: Modifier::Shift,
             paste_mode: PasteMode::ActiveApp,
             paste_plain_text: true,
+            ask_for_accessibility: true,
             retention: Retention::Month,
             launch_at_login: None,
             icloud_backup: None,

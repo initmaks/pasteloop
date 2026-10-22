@@ -473,6 +473,9 @@ fn spawn_status_commands(
     .detach();
 }
 
+/// Height of a standard macOS title bar, which sits above a window's content.
+const SETTINGS_TITLE_BAR: f64 = 28.0;
+
 /// The settings window: a normal window opened from a task, never synchronously from the
 /// popup's handler (see docs/architecture.md, Windows). One instance at a time.
 fn open_settings_window(cx: &mut App) {
@@ -500,7 +503,13 @@ fn open_settings_window(cx: &mut App) {
                 cx.notify();
             });
             panel.update(cx, |view, _, cx| view.preview_show(cx)).ok();
-            let bounds = Bounds::centered(None, size(px(760.), px(580.)), cx);
+            // Above the bar, which stays up as a live preview, and squeezed to fit the space.
+            let bar_height = state.read(cx).settings.panel_height as f64;
+            let place = macos::place_above_bar(bar_height, 760.0, 580.0, SETTINGS_TITLE_BAR);
+            let bounds = Bounds {
+                origin: point(px(place.x as f32), px(place.y as f32)),
+                size: size(px(place.width as f32), px(place.height as f32)),
+            };
             let result = cx.open_window(
                 WindowOptions {
                     kind: WindowKind::Normal,
@@ -509,9 +518,10 @@ fn open_settings_window(cx: &mut App) {
                         ..Default::default()
                     }),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    display_id: Some(gpui::DisplayId::new(place.display as u64)),
                     is_resizable: true,
                     is_minimizable: true,
-                    window_min_size: Some(size(px(640.), px(460.))),
+                    window_min_size: Some(size(px(640.), px((place.height as f32).min(460.)))),
                     ..Default::default()
                 },
                 {
@@ -1050,9 +1060,15 @@ fn spawn_item_jobs(
     }
 }
 
-/// Polls the general pasteboard every 100 ms. The skip rules run on the main thread against the
-/// change count and type list only; reading the data, classifying, and storing run in the
-/// background.
+/// How long a copy may show an empty type list before it is given up on. A copy made on an
+/// iPhone (Universal Clipboard) appears here first and its types arrive once macOS has fetched
+/// them from the phone, without another change of the change count.
+const TYPES_WAIT: Duration = Duration::from_secs(5);
+
+/// Polls the general pasteboard every 100 ms. The type list is read in the background (for a
+/// copy from another device it is fetched over the network); the skip rules run on the main
+/// thread against the change count and types; reading the data, classifying, and storing run
+/// in the background.
 fn spawn_poller(
     state: Entity<AppState>,
     link_tx: futures::channel::mpsc::UnboundedSender<(i64, macos::LinkMetadata)>,
@@ -1060,16 +1076,43 @@ fn spawn_poller(
 ) {
     cx.spawn(async move |cx| {
         let mut last = macos::pasteboard_change_count();
+        // A change whose types have not arrived yet, and since when.
+        let mut waiting: Option<(i64, Instant)> = None;
         loop {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
                 .await;
-            if macos::pasteboard_change_count() == last {
+            let now_count = macos::pasteboard_change_count();
+            let retry = waiting.is_some_and(|(c, _)| c == now_count);
+            if now_count == last && !retry {
                 continue;
             }
             let started = Instant::now();
-            let (count, types) = macos::pasteboard_types();
+            let (count, types) = cx
+                .background_executor()
+                .spawn(async { macos::pasteboard_types() })
+                .await;
             last = count;
+            if types.is_empty() {
+                let since = match waiting {
+                    Some((c, since)) if c == count => since,
+                    _ => {
+                        debug!("pasteboard changed with no types yet; waiting for them");
+                        Instant::now()
+                    }
+                };
+                waiting = (since.elapsed() < TYPES_WAIT).then_some((count, since));
+                if waiting.is_none() {
+                    debug!("skipped: no types after {TYPES_WAIT:?}");
+                }
+                continue;
+            }
+            if waiting.take().is_some() {
+                info!(
+                    "pasteboard types arrived after the change ({} types)",
+                    types.len()
+                );
+            }
             let front = macos::frontmost_app();
             let bundle = front.as_ref().and_then(|a| a.bundle_id.clone());
             let (skip, store) = cx.update(|cx| {

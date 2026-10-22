@@ -207,6 +207,12 @@ pub fn panel_frame_under_mouse(height: f64) -> (NSRect, f64) {
 /// The visible frame (without menu bar and Dock) of the screen under the mouse, else the main
 /// screen's.
 fn visible_frame_under_mouse() -> NSRect {
+    screen_under_mouse()
+        .map(|s| s.visibleFrame())
+        .unwrap_or_else(|| NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0)))
+}
+
+fn screen_under_mouse() -> Option<Retained<NSScreen>> {
     let mtm = main_thread();
     let mouse = NSEvent::mouseLocation();
     let screens = NSScreen::screens(mtm);
@@ -215,8 +221,55 @@ fn visible_frame_under_mouse() -> NSRect {
         .find(|screen| rect_contains(screen.frame(), mouse))
         .or_else(|| NSScreen::mainScreen(mtm))
         .or_else(|| screens.iter().next())
-        .map(|s| s.visibleFrame())
-        .unwrap_or_else(|| NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0)))
+}
+
+/// Where a window goes so the bar does not cover it, in the terms GPUI's window options use.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    /// The display's `CGDirectDisplayID`.
+    pub display: u32,
+    /// Top left of the window frame (title bar included), from the display's top left.
+    pub x: f64,
+    pub y: f64,
+    /// Content size, without the title bar.
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Centers a window in the space above the bar (`bar_height` points tall, at the bottom of the
+/// screen under the mouse), shrinking its content height to fit that space.
+pub fn place_above_bar(bar_height: f64, width: f64, height: f64, title_bar: f64) -> Placement {
+    const GAP: f64 = 12.0;
+    let screen = screen_under_mouse();
+    let (frame, visible) = screen
+        .as_ref()
+        .map(|s| (s.frame(), s.visibleFrame()))
+        .unwrap_or_else(|| {
+            let r = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1440.0, 900.0));
+            (r, r)
+        });
+    let display = screen
+        .as_ref()
+        .and_then(|s| {
+            s.deviceDescription()
+                .objectForKey(&NSString::from_str("NSScreenNumber"))
+        })
+        .and_then(|n| n.downcast_ref::<NSNumber>().map(|n| n.unsignedIntValue()))
+        .unwrap_or(0);
+    let space_bottom = visible.origin.y + bar_height.min(visible.size.height) + GAP;
+    let space_top = visible.origin.y + visible.size.height - GAP;
+    let room = space_top - space_bottom;
+    let height = height.min(room - title_bar).max(200.0);
+    let width = width.min(visible.size.width - 2.0 * GAP);
+    let frame_bottom = space_bottom + (room - height - title_bar).max(0.0) / 2.0;
+    let frame_top = (frame_bottom + height + title_bar).min(visible.origin.y + visible.size.height);
+    Placement {
+        display,
+        x: visible.origin.x - frame.origin.x + (visible.size.width - width) / 2.0,
+        y: frame.origin.y + frame.size.height - frame_top,
+        width,
+        height,
+    }
 }
 
 fn rect_contains(rect: NSRect, p: NSPoint) -> bool {
@@ -377,16 +430,19 @@ pub fn pasteboard_change_count() -> i64 {
 }
 
 /// The general pasteboard's change count and type list, which is all the skip rules need.
+/// Runs on a background thread, so it drains its own autorelease pool.
 pub fn pasteboard_types() -> (i64, Vec<String>) {
-    let pasteboard = NSPasteboard::generalPasteboard();
-    // The count first: if a copy lands before the types are read, the recheck after the data
-    // read in `read_pasteboard` sees the count move and drops this read.
-    let change_count = pasteboard.changeCount() as i64;
-    let types = pasteboard
-        .types()
-        .map(|t| t.iter().map(|s| s.to_string()).collect())
-        .unwrap_or_default();
-    (change_count, types)
+    objc2::rc::autoreleasepool(|_| {
+        let pasteboard = NSPasteboard::generalPasteboard();
+        // The count first: if a copy lands before the types are read, the recheck after the
+        // data read in `read_pasteboard` sees the count move and drops this read.
+        let change_count = pasteboard.changeCount() as i64;
+        let types = pasteboard
+            .types()
+            .map(|t| t.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+        (change_count, types)
+    })
 }
 
 /// Reads the data the classifier will use: file URLs, else the image when the types make an
@@ -442,9 +498,13 @@ fn read_pasteboard_data(pasteboard: &NSPasteboard, types: Vec<String>) -> Snapsh
     } else {
         // SAFETY: reading a constant exported by AppKit.
         let string_t = unsafe { NSPasteboardTypeString };
+        // A link copied from a share sheet or another device may carry only the URL type.
+        // SAFETY: reading a constant exported by AppKit.
+        let url_t = unsafe { NSPasteboardTypeURL };
         snapshot.text = pasteboard
             .stringForType(string_t)
             .or_else(|| pasteboard.stringForType(&NSString::from_str("NSStringPboardType")))
+            .or_else(|| pasteboard.stringForType(url_t))
             .map(|s| s.to_string());
         if has(clipboard::UTI_RTF) {
             snapshot.rtf = data_for(clipboard::UTI_RTF);

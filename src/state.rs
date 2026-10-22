@@ -227,8 +227,6 @@ pub struct AppState {
     pub apps: Arc<HashMap<String, AppInfo>>,
     pub undo: Vec<Vec<i64>>,
     pub toast: Option<Toast>,
-    /// Set after the first Accessibility explanation so the sheet shows once per launch.
-    pub accessibility_prompted: bool,
     /// Trust as measured at startup. macOS honors a grant made while the app runs only
     /// after a relaunch, so injection needs this too (see `paste::decide`).
     pub accessibility_at_launch: bool,
@@ -363,7 +361,6 @@ impl AppState {
             apps: Arc::default(),
             undo: Vec::new(),
             toast: None,
-            accessibility_prompted: false,
             accessibility_at_launch: false,
             relaunch_prompted: false,
             highlight_item: None,

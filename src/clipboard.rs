@@ -391,6 +391,11 @@ mod tests {
                 Some("https://x.com/p"),
                 Some(Kind::Link),
             ),
+            (
+                types(&["public.url"]),
+                Some("https://x.com/p"),
+                Some(Kind::Link),
+            ),
             (types(&[UTI_UTF8]), Some("hello"), Some(Kind::Text)),
             (types(&[UTI_RTF]), None, Some(Kind::Text)),
             (types(&[UTI_HTML]), None, Some(Kind::Text)),

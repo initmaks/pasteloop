@@ -9,8 +9,8 @@ use gpui::{
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, SharedString, Style, TextRun,
-    UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, font, point,
-    prelude::*, px, relative, size,
+    TextStyle, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, font,
+    point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -709,14 +709,18 @@ impl IntoElement for TextElement {
 }
 
 impl TextElement {
+    /// Shapes the text with `style` and `line_height`, which the caller takes from the
+    /// element's own style scope: a measure callback runs outside it, where the window's current
+    /// style is a different one.
     fn shape(
         &self,
         width: Option<Pixels>,
+        style: &TextStyle,
+        line_height: Pixels,
         window: &mut Window,
         cx: &mut App,
     ) -> (Vec<(WrappedLine, Pixels)>, Pixels) {
         let input = self.input.read(cx);
-        let style = window.text_style();
         let (display_text, text_color) = if input.content.is_empty() {
             (input.placeholder.clone(), input.colors.placeholder)
         } else {
@@ -764,7 +768,6 @@ impl TextElement {
         } else {
             vec![run]
         };
-        let line_height = window.line_height();
         let wrap = if input.multiline { width } else { None };
         let shaped = window
             .text_system()
@@ -805,6 +808,8 @@ impl Element for TextElement {
         style.size.width = relative(1.).into();
         if multiline {
             let input = self.input.clone();
+            let text_style = window.text_style();
+            let line_height = window.line_height();
             let layout =
                 window.request_measured_layout(style, move |known, available, window, cx| {
                     let width = known.width.or(match available.width {
@@ -814,7 +819,8 @@ impl Element for TextElement {
                     let element = TextElement {
                         input: input.clone(),
                     };
-                    let (lines, line_height) = element.shape(width, window, cx);
+                    let (lines, line_height) =
+                        element.shape(width, &text_style, line_height, window, cx);
                     let height: Pixels = lines
                         .last()
                         .map_or(line_height, |(l, y)| *y + l.size(line_height).height);
@@ -836,7 +842,9 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        let (lines, line_height) = self.shape(Some(bounds.size.width), window, cx);
+        let (style, line_height) = (window.text_style(), window.line_height());
+        let (lines, line_height) =
+            self.shape(Some(bounds.size.width), &style, line_height, window, cx);
         let input = self.input.read(cx);
         let colors = input.colors.clone();
         let selected = input.selected_range.clone();
