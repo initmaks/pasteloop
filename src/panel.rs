@@ -592,20 +592,99 @@ impl PanelView {
     }
 
     fn paste_selected(&mut self, _: &PasteSelected, _: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog.is_some() {
+            return self.accept_dialog(cx);
+        }
         let items = self.state.read(cx).selected_items();
         self.paste_items(items, false, cx);
     }
 
     fn paste_alternate(&mut self, _: &PasteAlternate, _: &mut Window, cx: &mut Context<Self>) {
+        if self.dialog.is_some() {
+            return;
+        }
         let items = self.state.read(cx).selected_items();
         self.paste_items(items, true, cx);
     }
 
     fn quick_paste(&mut self, n: usize, alternate: bool, cx: &mut Context<Self>) {
+        if self.dialog.is_some() {
+            return;
+        }
         let item = self.state.read(cx).items.get(n.saturating_sub(1)).cloned();
         if let Some(item) = item {
             self.paste_items(vec![item], alternate, cx);
         }
+    }
+
+    /// What the open dialog's highlighted button does; Return does the same while it is up.
+    fn accept_dialog(&mut self, cx: &mut Context<Self>) {
+        let Some(dialog) = self.dialog.take() else {
+            return;
+        };
+        match dialog {
+            Dialog::LaunchAtLogin => {
+                match macos::set_launch_at_login(true) {
+                    Ok(()) => info!("launch at login enabled"),
+                    Err(err) => warn!("launch at login failed: {err}"),
+                }
+                self.state.update(cx, |s, cx| {
+                    s.settings.launch_at_login = Some(true);
+                    s.save_settings();
+                    s.show_toast(match macos::login_item_status() {
+                        macos::LoginItemStatus::RequiresApproval => {
+                            "Approve PasteLoop in System Settings → Login Items"
+                        }
+                        _ => "PasteLoop will open at login",
+                    });
+                    cx.notify();
+                });
+                self.expire_toast_later(cx);
+            }
+            Dialog::Backup => {
+                info!("iCloud Drive backup turned on");
+                self.state.update(cx, |s, cx| {
+                    s.settings.icloud_backup = Some(true);
+                    s.save_settings();
+                    s.backup.requested = true;
+                    cx.notify();
+                });
+            }
+            Dialog::ConfirmErase { .. } => self.state.update(cx, |s, cx| {
+                s.erase_history();
+                cx.notify();
+            }),
+            Dialog::ConfirmDeleteCollection { id, .. } => {
+                let store = Arc::clone(&self.state.read(cx).store);
+                if let Err(err) = store.delete_collection(id) {
+                    warn!("delete collection failed: {err:#}");
+                }
+                self.state.update(cx, |s, cx| {
+                    s.refresh_collections();
+                    s.set_tab(Tab::History);
+                    cx.notify();
+                });
+            }
+            Dialog::Accessibility(_) => {
+                info!("opening Accessibility settings");
+                macos::accessibility_trusted_with_prompt();
+                macos::open_accessibility_settings();
+                self.hide(cx);
+            }
+            Dialog::Relaunch(_) => match macos::spawn_relauncher() {
+                Ok(()) => {
+                    info!("relaunching for the Accessibility grant");
+                    cx.emit(PanelEvent::Quit);
+                }
+                Err(err) => {
+                    warn!("relaunch helper failed: {err}");
+                    self.toast_then_hide("Couldn't relaunch — quit and reopen PasteLoop", cx);
+                }
+            },
+            // Its name field submits on Return itself.
+            form @ Dialog::CollectionForm { .. } => self.dialog = Some(form),
+        }
+        cx.notify();
     }
 
     /// The paste flow: plan on the main thread (reads blobs), then run the write/inject/hide
@@ -2911,22 +2990,7 @@ impl PanelView {
                             cx.notify();
                         }))
                         .child(self.dialog_button("login-yes", "Open at Login", true, cx, |this, _, cx| {
-                            this.dialog = None;
-                            match macos::set_launch_at_login(true) {
-                                Ok(()) => info!("launch at login enabled"),
-                                Err(err) => warn!("launch at login failed: {err}"),
-                            }
-                            this.state.update(cx, |s, cx| {
-                                s.settings.launch_at_login = Some(true);
-                                s.save_settings();
-                                s.show_toast(match macos::login_item_status() {
-                                    macos::LoginItemStatus::RequiresApproval => "Approve PasteLoop in System Settings → Login Items",
-                                    _ => "PasteLoop will open at login",
-                                });
-                                cx.notify();
-                            });
-                            this.expire_toast_later(cx);
-                            cx.notify();
+                            this.accept_dialog(cx)
                         })),
                 ),
             Dialog::Backup => body
@@ -2943,15 +3007,7 @@ impl PanelView {
                             cx.notify();
                         }))
                         .child(self.dialog_button("backup-yes", "Back Up", true, cx, |this, _, cx| {
-                            this.dialog = None;
-                            info!("iCloud Drive backup turned on");
-                            this.state.update(cx, |s, cx| {
-                                s.settings.icloud_backup = Some(true);
-                                s.save_settings();
-                                s.backup.requested = true;
-                                cx.notify();
-                            });
-                            cx.notify();
+                            this.accept_dialog(cx)
                         })),
                 ),
             Dialog::ConfirmErase { count } => body
@@ -2964,16 +3020,10 @@ impl PanelView {
                             cx.notify();
                         }))
                         .child(self.dialog_button("erase", "Erase", true, cx, |this, _, cx| {
-                            this.dialog = None;
-                            this.state.update(cx, |s, cx| {
-                                s.erase_history();
-                                cx.notify();
-                            });
-                            cx.notify();
+                            this.accept_dialog(cx)
                         })),
                 ),
-            Dialog::ConfirmDeleteCollection { id, name } => {
-                let id = *id;
+            Dialog::ConfirmDeleteCollection { name, .. } => {
                 body.child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(format!("Delete “{name}”?")))
                     .child("Items stay in your clipboard history; only the collection goes away.")
                     .child(
@@ -2982,18 +3032,8 @@ impl PanelView {
                                 this.dialog = None;
                                 cx.notify();
                             }))
-                            .child(self.dialog_button("delete", "Delete", true, cx, move |this, _, cx| {
-                                this.dialog = None;
-                                let store = Arc::clone(&this.state.read(cx).store);
-                                if let Err(err) = store.delete_collection(id) {
-                                    warn!("delete collection failed: {err:#}");
-                                }
-                                this.state.update(cx, |s, cx| {
-                                    s.refresh_collections();
-                                    s.set_tab(Tab::History);
-                                    cx.notify();
-                                });
-                                cx.notify();
+                            .child(self.dialog_button("delete", "Delete", true, cx, |this, _, cx| {
+                                this.accept_dialog(cx)
                             })),
                     )
             }
@@ -3024,10 +3064,7 @@ impl PanelView {
                             cx.notify();
                         }))
                         .child(self.dialog_button("open", "Open System Settings", true, cx, |this, _, cx| {
-                            this.dialog = None;
-                            macos::accessibility_trusted_with_prompt();
-                            macos::open_accessibility_settings();
-                            this.hide(cx);
+                            this.accept_dialog(cx)
                         })),
                 ),
             Dialog::Relaunch(_) => body
@@ -3046,17 +3083,7 @@ impl PanelView {
                             cx.notify();
                         }))
                         .child(self.dialog_button("relaunch", "Relaunch PasteLoop", true, cx, |this, _, cx| {
-                            this.dialog = None;
-                            match macos::spawn_relauncher() {
-                                Ok(()) => {
-                                    info!("relaunching for the Accessibility grant");
-                                    cx.emit(PanelEvent::Quit);
-                                }
-                                Err(err) => {
-                                    warn!("relaunch helper failed: {err}");
-                                    this.toast_then_hide("Couldn't relaunch — quit and reopen PasteLoop", cx);
-                                }
-                            }
+                            this.accept_dialog(cx)
                         })),
                 ),
             Dialog::CollectionForm { id, color } => {
