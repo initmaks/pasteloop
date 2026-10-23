@@ -21,6 +21,10 @@ release:
 test:
     cargo test
 
+# Dependency advisories, licenses, and sources (deny.toml); CI runs it too
+audit:
+    cargo deny check
+
 # Format, lint with warnings as errors, and test — the pre-commit gate
 check:
     cargo fmt --check

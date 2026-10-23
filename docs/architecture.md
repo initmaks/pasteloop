@@ -160,6 +160,13 @@ memberships, apps, and blob rows come along, blob files are copied (iCloud downl
 read), and the library adopts the backup's folder so the next backup continues there. The age
 limit keeps two Macs in daily use from folding their histories into each other.
 
+A backup is untrusted input: anyone who can write to the user's iCloud Drive can change it.
+Before anything is merged, the snapshot must pass SQLite's quick check with `trusted_schema`
+off, its tables must be plain tables, and every blob id and content hash in it must be 64
+lowercase hex digits (`store::is_hash`), because those name files on disk. The path builders
+refuse anything else too, so no value from a backup can turn into a path outside the library.
+The unpacked snapshot is capped at 4 GB and the manifest at 1 MB.
+
 ## Import from the Paste app
 
 `import.rs` opens the Paste app's Core Data store read-only. Each clip's pasteboard payload

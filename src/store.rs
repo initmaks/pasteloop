@@ -1025,9 +1025,17 @@ impl Store {
     /// files themselves are copied separately (`missing_blob_files`).
     pub fn merge_snapshot(&self, snapshot: &Path) -> Result<MergeReport> {
         {
-            // Bring the snapshot to this build's schema; fails for one from a newer build.
+            // A backup is not trusted input: its schema may not run functions, and it must hold
+            // plain tables with well-formed names before anything of it is merged.
             let conn = Connection::open(snapshot)?;
+            conn.execute_batch("PRAGMA trusted_schema = OFF;")?;
+            let check: String = conn.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+            if check != "ok" {
+                return Err(anyhow!("the backup's database is damaged ({check})"));
+            }
+            // Bring the snapshot to this build's schema; fails for one from a newer build.
             migrate(&conn)?;
+            validate_snapshot(&conn)?;
         }
         let path = snapshot.to_string_lossy().to_string();
         self.write(|conn| {
@@ -1464,12 +1472,27 @@ fn prefix_at_char_boundary(s: &str, max: usize) -> String {
 
 // ---- blobs ---------------------------------------------------------------------------------
 
-fn blob_path_in(dir: &Path, id: &str) -> PathBuf {
-    let prefix = if id.len() >= 2 { &id[..2] } else { "xx" };
-    dir.join("blobs").join(prefix).join(id)
+/// Whether `s` is a blake3 hash as this app writes it: 64 lowercase hex digits. Blob ids and
+/// content hashes name files on disk, so anything else (from a damaged or crafted backup) must
+/// never reach a path.
+pub fn is_hash(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// A blob's file. An id that is not a hash maps to one fixed name inside the blob folder that is
+/// never written, so it can neither escape the folder nor match a real blob.
+fn blob_path_in(dir: &Path, id: &str) -> PathBuf {
+    if !is_hash(id) {
+        return dir.join("blobs").join("invalid");
+    }
+    dir.join("blobs").join(&id[..2]).join(id)
+}
+
+/// A cached PNG keyed by a hash, or by a hash plus `-preview` (see `jobs::preview_key`).
 fn thumb_path_in(dir: &Path, key: &str) -> PathBuf {
+    if !is_hash(key.strip_suffix("-preview").unwrap_or(key)) {
+        return dir.join("thumbs").join("invalid.png");
+    }
     dir.join("thumbs").join(format!("{key}.png"))
 }
 
@@ -1526,6 +1549,48 @@ const ITEM_TABLE_COLUMNS: &str = "uuid, kind, created_at, updated_at, last_used_
     source_bundle_id, source_app_name, title, text, text_blob, rich_blob, rich_type, image_blob, \
     image_w, image_h, image_truncated, files_json, size_bytes, content_hash, ocr_text, link_title, \
     link_domain, link_image_blob, device_id, deleted_at";
+
+/// Refuses a snapshot whose tables are not plain tables or whose blob ids and content hashes are
+/// not hashes (they become file names).
+fn validate_snapshot(conn: &Connection) -> Result<()> {
+    for table in [
+        "items",
+        "collections",
+        "collection_items",
+        "apps",
+        "blobs",
+        "meta",
+    ] {
+        let kind: Option<String> = conn
+            .query_row(
+                "SELECT type FROM sqlite_master WHERE name = ?1",
+                params![table],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if kind.as_deref() != Some("table") {
+            return Err(anyhow!("the backup's `{table}` is not a table"));
+        }
+    }
+    let names = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM blobs UNION ALL SELECT content_hash FROM items \
+             UNION ALL SELECT text_blob FROM items WHERE text_blob IS NOT NULL \
+             UNION ALL SELECT rich_blob FROM items WHERE rich_blob IS NOT NULL \
+             UNION ALL SELECT image_blob FROM items WHERE image_blob IS NOT NULL \
+             UNION ALL SELECT link_image_blob FROM items WHERE link_image_blob IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if let Some(bad) = names.iter().find(|n| !is_hash(n)) {
+        return Err(anyhow!(
+            "the backup names a file {:?}, which is not a hash; not restored",
+            truncate_chars(bad, 80)
+        ));
+    }
+    Ok(())
+}
 
 /// `merge_snapshot` with the snapshot attached as `b`.
 fn merge_attached(conn: &mut Connection) -> Result<MergeReport> {
@@ -1841,6 +1906,35 @@ mod tests {
         new.source_bundle_id = Some("com.apple.TextEdit".into());
         new.source_app_name = Some("TextEdit".into());
         store.insert(&new).expect("insert").0
+    }
+
+    #[test]
+    fn only_hashes_become_file_names() {
+        let dir = Path::new("/lib");
+        let hash = "a".repeat(64);
+        assert!(is_hash(&hash));
+        assert_eq!(
+            blob_path_in(dir, &hash),
+            dir.join("blobs").join("aa").join(&hash)
+        );
+        assert_eq!(
+            thumb_path_in(dir, &format!("{hash}-preview")),
+            dir.join("thumbs").join(format!("{hash}-preview.png"))
+        );
+        for bad in [
+            "../../x",
+            "",
+            "é",
+            &"A".repeat(64),
+            &format!("{}/", "a".repeat(63)),
+        ] {
+            assert!(!is_hash(bad), "{bad:?}");
+            assert_eq!(blob_path_in(dir, bad), dir.join("blobs").join("invalid"));
+            assert_eq!(
+                thumb_path_in(dir, bad),
+                dir.join("thumbs").join("invalid.png")
+            );
+        }
     }
 
     #[test]

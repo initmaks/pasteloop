@@ -25,8 +25,11 @@ signature on every build, so `just bundle` signs with a local certificate named
 just check      # cargo fmt --check, clippy with warnings as errors, tests
 ```
 
-CI runs the same on every push and pull request. If you touch search or storage, also run
-`just bench` (search latency over 100k synthetic items) and compare before and after.
+CI runs the same on every push and pull request, plus `just audit` (`cargo deny`: known
+advisories, licenses, and dependency sources, configured in `deny.toml`) and CodeQL; both also
+run weekly. Dependabot opens update pull requests for crates and the pinned GitHub Actions.
+If you touch search or storage, also run `just bench` (search latency over 100k synthetic items)
+and compare before and after.
 
 ## Ground rules
 

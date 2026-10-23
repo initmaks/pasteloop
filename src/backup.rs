@@ -227,7 +227,7 @@ pub fn backups(root: &Path) -> Result<Vec<(PathBuf, Manifest)>> {
     let mut found = Vec::new();
     for entry in entries.flatten() {
         let folder = entry.path();
-        let Ok(bytes) = fs::read(folder.join(MANIFEST)) else {
+        let Ok(bytes) = read_capped(&folder.join(MANIFEST), MAX_MANIFEST) else {
             continue;
         };
         match serde_json::from_slice::<Manifest>(&bytes) {
@@ -255,12 +255,20 @@ pub fn restore(
         let mut input = std::io::BufReader::new(
             fs::File::open(folder.join(SNAPSHOT)).context("open the backup's snapshot")?,
         );
-        let mut output = std::io::BufWriter::new(fs::File::create(&db)?);
-        macos::lzfse_stream(&mut input, &mut output, false)?;
-        std::io::Write::flush(&mut output)?;
+        let mut output = Capped {
+            inner: std::io::BufWriter::new(fs::File::create(&db)?),
+            left: MAX_SNAPSHOT,
+        };
+        let unpacked = macos::lzfse_stream(&mut input, &mut output, false)
+            .and_then(|()| std::io::Write::flush(&mut output));
+        if let Err(err) = unpacked {
+            let _ = fs::remove_file(&db);
+            return Err(err).context("unpack the backup's snapshot");
+        }
     }
-    let merged = store.merge_snapshot(&db)?;
+    let merged = store.merge_snapshot(&db);
     let _ = fs::remove_file(&db);
+    let merged = merged?;
 
     let name = folder
         .file_name()
@@ -275,7 +283,7 @@ pub fn restore(
     store.set_meta("backup_folder", name)?;
     store.set_meta("backup_restored_from", &manifest.library)?;
 
-    let settings = fs::read(folder.join(SETTINGS))
+    let settings = read_capped(&folder.join(SETTINGS), MAX_MANIFEST)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
     let missing_blobs = fetch_missing_blobs(store, folder)?;
@@ -326,9 +334,13 @@ fn work_dir(store: &Store) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// A blob's file in a backup folder; ids that are not hashes never become paths (see
+/// `store::is_hash`).
 fn blob_path(folder: &Path, id: &str) -> PathBuf {
-    let prefix = if id.len() >= 2 { &id[..2] } else { "xx" };
-    folder.join("blobs").join(prefix).join(id)
+    if !crate::store::is_hash(id) {
+        return folder.join("blobs").join("invalid");
+    }
+    folder.join("blobs").join(&id[..2]).join(id)
 }
 
 fn list_blobs(dir: &Path) -> Result<HashSet<String>> {
@@ -340,7 +352,7 @@ fn list_blobs(dir: &Path) -> Result<HashSet<String>> {
         if let Ok(files) = fs::read_dir(prefix.path()) {
             for file in files.flatten() {
                 if let Some(name) = file.file_name().to_str()
-                    && !name.starts_with('.')
+                    && crate::store::is_hash(name)
                 {
                     ids.insert(name.to_string());
                 }
@@ -362,6 +374,48 @@ fn copy_atomic(from: &Path, to: &Path) -> Result<()> {
     fs::copy(from, &tmp).with_context(|| format!("copy {}", from.display()))?;
     fs::rename(&tmp, to)?;
     Ok(())
+}
+
+/// The largest unpacked snapshot a restore accepts; a 110k-item library is 120 MB.
+const MAX_SNAPSHOT: u64 = 4 << 30;
+/// The largest manifest or settings file read from a backup.
+const MAX_MANIFEST: u64 = 1 << 20;
+
+/// Reads a small file from a backup, refusing one larger than `max` bytes.
+fn read_capped(path: &Path, max: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(max + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max {
+        return Err(std::io::Error::other("file too large"));
+    }
+    Ok(bytes)
+}
+
+/// A writer that fails once more than `left` bytes went through it: a crafted snapshot cannot
+/// unpack into a disk-filling file.
+struct Capped<W> {
+    inner: W,
+    left: u64,
+}
+
+impl<W: std::io::Write> std::io::Write for Capped<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.len() as u64 > self.left {
+            return Err(std::io::Error::other(
+                "the backup's snapshot unpacks too large",
+            ));
+        }
+        let n = self.inner.write(buf)?;
+        self.left -= n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Runs `job` on its own low-priority thread that may read iCloud placeholders (downloading
@@ -583,6 +637,101 @@ mod tests {
 
         let fresh = store_in(&tmp.path().join("fresh"));
         assert!(restore_candidate(&fresh, &root).unwrap().is_some());
+    }
+
+    /// Rewrites a backup's snapshot with `sql`, the way someone with write access to iCloud
+    /// Drive could.
+    fn tamper(folder: &Path, sql: &str) {
+        let packed = fs::read(folder.join(SNAPSHOT)).unwrap();
+        let mut db = Vec::new();
+        macos::lzfse_stream(&mut packed.as_slice(), &mut db, false).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("s.sqlite");
+        fs::write(&path, db).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap();
+        let mut repacked = Vec::new();
+        macos::lzfse_stream(
+            &mut fs::read(&path).unwrap().as_slice(),
+            &mut repacked,
+            true,
+        )
+        .unwrap();
+        fs::write(folder.join(SNAPSHOT), repacked).unwrap();
+    }
+
+    /// A backup of a few items and one image, plus a fresh library to restore it into.
+    fn hostile_setup(tmp: &Path) -> (PathBuf, PathBuf, Manifest, Store) {
+        let root = tmp.join("icloud");
+        let old = store_in(&tmp.join("old"));
+        old.insert(&NewItem::text("hello")).unwrap();
+        old.insert(&image(3)).unwrap();
+        back_up(&old, &tmp.join("none.json"), &root).unwrap();
+        let (folder, manifest) = backups(&root).unwrap().remove(0);
+        (root, folder, manifest, store_in(&tmp.join("new")))
+    }
+
+    #[test]
+    fn a_backup_naming_a_path_instead_of_a_blob_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, folder, manifest, new) = hostile_setup(tmp.path());
+        // The blob id `../escaped` reads `<iCloud folder>/escaped`, which anyone who can write to
+        // iCloud Drive controls, and writes `<library>/../escaped`, outside the library. One
+        // more `../` on a real Mac reaches `~/Library/LaunchAgents`.
+        let escape = "../escaped";
+        fs::write(root.join("escaped"), "payload").unwrap();
+        tamper(
+            &folder,
+            &format!(
+                "UPDATE blobs SET id = '{escape}'; UPDATE items SET image_blob = '{escape}' \
+                 WHERE image_blob IS NOT NULL;"
+            ),
+        );
+        let err = restore(&new, &root, &folder, &manifest).unwrap_err();
+        assert!(format!("{err:#}").contains("not a hash"), "{err:#}");
+        assert_eq!(new.count_items().unwrap(), 0, "nothing is merged");
+        assert!(
+            !tmp.path().join("escaped").exists(),
+            "the payload stayed in iCloud Drive"
+        );
+    }
+
+    #[test]
+    fn a_backup_with_a_crafted_content_hash_is_refused_without_a_crash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, folder, manifest, new) = hostile_setup(tmp.path());
+        // Not ASCII: slicing the first two bytes of this as a name would panic.
+        tamper(
+            &folder,
+            "UPDATE items SET content_hash = 'éé' || substr(content_hash, 5);",
+        );
+        assert!(restore(&new, &root, &folder, &manifest).is_err());
+        assert_eq!(new.count_items().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_backup_whose_table_is_a_view_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, folder, manifest, new) = hostile_setup(tmp.path());
+        tamper(
+            &folder,
+            "ALTER TABLE apps RENAME TO apps_real; CREATE VIEW apps AS SELECT * FROM apps_real;",
+        );
+        let err = restore(&new, &root, &folder, &manifest).unwrap_err();
+        assert!(format!("{err:#}").contains("not a table"), "{err:#}");
+    }
+
+    #[test]
+    fn a_snapshot_that_unpacks_too_large_is_cut_off() {
+        let mut out = Capped {
+            inner: Vec::new(),
+            left: 10,
+        };
+        assert!(std::io::Write::write_all(&mut out, b"12345").is_ok());
+        assert!(std::io::Write::write_all(&mut out, b"123456").is_err());
+        assert_eq!(out.inner, b"12345");
     }
 
     #[test]
