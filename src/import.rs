@@ -211,21 +211,21 @@ pub fn import_from_paste(
 /// binary plist (raw or LZFSE, magic `bvx`) or raw-DEFLATE-compressed plist or JSON with base64
 /// values, all shaped `[{ types, dataByType: { uti: <bytes> } }]`.
 fn parse_pasteboard(blob: &[u8], external: &Path) -> Option<Snapshot> {
-    let stored;
-    let body = match blob.split_first()? {
-        (1, inline) => inline,
-        (2, name) => {
-            stored = read_external(external, name)?;
-            &stored[..]
-        }
+    let body: std::borrow::Cow<[u8]> = match blob.split_first()? {
+        (1, inline) => inline.into(),
+        (2, name) => read_external(external, name)?.into(),
         _ => return None,
     };
     let data_by_type = if body.starts_with(b"bplist00") {
-        plist_data_by_type(body)?
-    } else if body.starts_with(b"bvx") {
-        plist_data_by_type(&crate::macos::lzfse_decode(body, MAX_PAYLOAD)?)?
+        plist_data_by_type(&body)?
     } else {
-        let decoded = crate::macos::zlib_decode(body, MAX_PAYLOAD)?;
+        let decoded = if body.starts_with(b"bvx") {
+            crate::macos::lzfse_decode(&body, MAX_PAYLOAD)?
+        } else {
+            crate::macos::zlib_decode(&body, MAX_PAYLOAD)?
+        };
+        // Payloads run to hundreds of megabytes: keep one copy at a time.
+        drop(body);
         if decoded.starts_with(b"bplist00") {
             plist_data_by_type(&decoded)?
         } else {
@@ -264,15 +264,12 @@ fn is_uuid(s: &str) -> bool {
 /// `dataByType` (uti -> bytes) from a binary-plist pasteboard payload.
 fn plist_data_by_type(bytes: &[u8]) -> Option<HashMap<String, Vec<u8>>> {
     let value = plist::Value::from_reader(Cursor::new(bytes)).ok()?;
-    let dict = value
-        .as_array()?
-        .first()?
-        .as_dictionary()?
-        .get("dataByType")?
-        .as_dictionary()?;
+    // Moves the data out of the parsed tree rather than copying it.
+    let mut first = value.into_array()?.into_iter().next()?.into_dictionary()?;
+    let dict = first.remove("dataByType")?.into_dictionary()?;
     Some(
-        dict.iter()
-            .filter_map(|(k, v)| v.as_data().map(|b| (k.clone(), b.to_vec())))
+        dict.into_iter()
+            .filter_map(|(k, v)| v.into_data().map(|b| (k, b)))
             .collect(),
     )
 }
