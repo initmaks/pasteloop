@@ -22,7 +22,7 @@ Usage:
   pasteloop ocr <image>          print the text Vision recognizes in an image
   pasteloop seed [n]             insert n synthetic text items (performance checks)
   pasteloop import-paste [--db <path>] [--limit n] [--dry-run]
-                              migrate text, link, and color history from the Paste app
+                              import history from the Paste app (again: adds what is missing)
   pasteloop backup [--to <dir>]  back up now (default: iCloud Drive/PasteLoop)
   pasteloop restore --from <backup folder>
                               merge a backup into this library";

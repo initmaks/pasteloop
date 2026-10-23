@@ -6,6 +6,9 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
 
+- Importing from Paste brings over images and files too: the importer now reads the clips Paste stores outside its database, which are most images and files and the longest texts. It also finds the Mac App Store edition of Paste, and running it again only adds what is missing, without duplicating collections.
+- A copy that carries only HTML (from web views and Chromium browsers) becomes a text card with readable text instead of an empty one.
+
 ## 1.1.0 — 2026-10-23
 
 - Optional backup to iCloud Drive, asked about once on first launch. It runs on its own after changes settle and before quitting, and a new Mac or a fresh macOS install restores history, collections, and settings automatically. The live database never syncs; a compressed snapshot (36 MB for 110k items) and the stored files do. `pasteloop backup` and `pasteloop restore --from <folder>` do the same from a terminal.

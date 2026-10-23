@@ -169,11 +169,19 @@ The unpacked snapshot is capped at 4 GB and the manifest at 1 MB.
 
 ## Import from the Paste app
 
-`import.rs` opens the Paste app's Core Data store read-only. Each clip's pasteboard payload
-comes in one of three encodings: a binary property list, an LZFSE stream, or a raw-DEFLATE JSON
-array with base64 values. The compressed ones are decoded with Apple's Compression framework. Text,
-links, and colors are imported with their date, source app, title, and pinboard membership.
-Images are stored in a separate format and are skipped.
+`import.rs` opens the Paste app's Core Data store read-only: the Mac App Store edition's inside
+its sandbox container, else the Setapp edition's. Each clip's payload column uses Core Data's
+external-storage format: one byte, then the data inline (`0x01`) or the UUID name of a file in
+`.db_SUPPORT/_EXTERNAL_DATA/` next to the store (`0x02`), which is where large clips (most images
+and files) live. Only a UUID is accepted as that file name, and a payload is capped at 256 MB.
+The data comes in one of three encodings: a binary property list, an LZFSE stream, or raw
+DEFLATE around a property list or a JSON array with base64 values. The compressed ones are
+decoded with Apple's Compression framework. Each clip goes through the same classifier as a live
+copy and is inserted with its date, source app, title, and pinboard; an item already in the
+library (same content) is left alone and a pinboard reuses a collection of the same name, so
+running the import again only adds what is missing. Clips in formats PasteLoop does not show
+(Keynote and other iWork data, drawing canvases) are skipped. On a 114k-clip Paste library the
+import takes a few minutes and peaks at about 3 GB of memory, for the largest images.
 
 ## Building without the Metal compiler
 

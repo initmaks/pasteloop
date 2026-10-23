@@ -56,9 +56,10 @@ PasteLoop offers to start at login on its first launch; change that later in Set
 
 ## Coming from Paste?
 
-Settings → Migration imports text, link, and color history and your pinboards from the Paste
-app, keeping their dates. Both apps use Shift-Cmd-V by default, so quit Paste or change one of
-the shortcuts.
+Settings → Migration imports your history from the Paste app (Mac App Store or Setapp edition):
+text, links, colors, images, and files, with their dates, source apps, and pinboards. Running it
+again only adds what is missing. Both apps use Shift-Cmd-V by default, so quit Paste or change
+one of the shortcuts.
 
 PasteLoop is an independent project, not affiliated with or endorsed by Paste or its
 developers. The name appears here only to identify the app PasteLoop can import from.
