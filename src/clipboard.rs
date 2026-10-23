@@ -152,6 +152,122 @@ pub fn classify(types: &[String], plain_text: Option<&str>) -> Option<Kind> {
     None
 }
 
+/// The readable text of an HTML fragment, roughly as a browser copies it: tags dropped, source
+/// line breaks as spaces, blocks on their own lines and paragraphs apart, scripts and styles left
+/// out, entities decoded.
+pub fn html_to_text(html: &str) -> String {
+    // Ensures `out` ends with at least `n` line breaks (none at the very start).
+    fn breaks(out: &mut String, n: usize) {
+        if out.trim().is_empty() {
+            return;
+        }
+        let have = out.len() - out.trim_end_matches('\n').len();
+        for _ in have..n {
+            out.push('\n');
+        }
+    }
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut rest = html;
+    loop {
+        let lt = rest.find('<').unwrap_or(rest.len());
+        let text = decode_entities(&rest[..lt]);
+        out.extend(
+            text.chars()
+                .map(|c| if c.is_whitespace() { ' ' } else { c }),
+        );
+        if lt == rest.len() {
+            break;
+        }
+        let tag_end = rest[lt..].find('>').map_or(rest.len(), |i| lt + i + 1);
+        let tag = rest[lt + 1..tag_end]
+            .trim_end_matches('>')
+            .to_ascii_lowercase();
+        let closing = tag.starts_with('/');
+        let name: String = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        rest = &rest[tag_end..];
+        match name.as_str() {
+            "script" | "style" | "head" | "title" if !closing => {
+                let close = format!("</{name}");
+                rest = rest
+                    .to_ascii_lowercase()
+                    .find(&close)
+                    .map_or("", |i| &rest[i..]);
+            }
+            "br" => out.push('\n'),
+            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" | "pre" | "table" => {
+                breaks(&mut out, 2)
+            }
+            "div" | "li" | "tr" | "ul" | "ol" | "section" | "article" | "header" | "footer"
+            | "hr" => breaks(&mut out, 1),
+            "td" | "th" => out.push(' '),
+            _ => {}
+        }
+    }
+    let mut text = String::with_capacity(out.len());
+    let mut blank = false;
+    for line in out.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            blank = !text.is_empty();
+            continue;
+        }
+        if blank {
+            text.push('\n');
+            blank = false;
+        }
+        text.push_str(&line);
+        text.push('\n');
+    }
+    text.trim_end().to_string()
+}
+
+fn decode_entities(s: &str) -> std::borrow::Cow<'_, str> {
+    if !s.contains('&') {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        let decoded = rest.find(';').filter(|&semi| semi <= 10).and_then(|semi| {
+            let entity = &rest[1..semi];
+            let ch = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                _ => {
+                    let code = match entity.strip_prefix("#x").or(entity.strip_prefix("#X")) {
+                        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                        None => entity.strip_prefix('#').and_then(|d| d.parse().ok()),
+                    };
+                    code.and_then(char::from_u32)
+                }
+            };
+            ch.map(|c| (c, semi))
+        });
+        match decoded {
+            Some((c, semi)) => {
+                out.push(c);
+                rest = &rest[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 /// A standalone six-hex-digit token, with an optional leading `#`, is a color only if it has
 /// the `#` or contains at least one letter A–F. Returns the normalized `#RRGGBB`.
 pub fn color_from_text(text: &str) -> Option<String> {
@@ -209,7 +325,19 @@ pub fn looks_like_code(text: &str) -> bool {
 /// Turns a snapshot into the row to store. Image bytes are normalized here (TIFF to PNG,
 /// oversized images downscaled). Fails with `Skip::TooLarge` over the capture cap and with
 /// `Skip::Unclassified` when no rule matches.
-pub fn build_item(snapshot: Snapshot, source: Option<&macos::FrontApp>) -> Result<NewItem, Skip> {
+pub fn build_item(
+    mut snapshot: Snapshot,
+    source: Option<&macos::FrontApp>,
+) -> Result<NewItem, Skip> {
+    // Some apps (web views, Chromium) copy HTML without a plain-text version.
+    if snapshot.text.as_deref().is_none_or(|t| t.trim().is_empty())
+        && let Some(html) = &snapshot.html
+    {
+        let text = html_to_text(&String::from_utf8_lossy(html));
+        if !text.is_empty() {
+            snapshot.text = Some(text);
+        }
+    }
     let total = snapshot.image.as_ref().map_or(0, |(b, _)| b.len())
         + snapshot.text.as_ref().map_or(0, String::len)
         + snapshot.rtf.as_ref().map_or(0, Vec::len)
@@ -558,6 +686,47 @@ mod tests {
         let img = item.image.unwrap();
         assert_eq!((img.width, img.height, img.truncated), (3, 2, false));
         assert_eq!(img.png_or_original, png);
+    }
+
+    #[test]
+    fn html_becomes_readable_text() {
+        let cases = [
+            ("<b>Hello</b> world", "Hello world"),
+            ("<p>One</p><p>Two</p>", "One\n\nTwo"),
+            ("<p>\n  wrapped\n  source\n</p>", "wrapped source"),
+            ("<h1>Title</h1>Body", "Title\n\nBody"),
+            ("a<br><br>b", "a\n\nb"),
+            ("a<br>b<br/>c", "a\nb\nc"),
+            ("<ul><li>x</li><li>y</li></ul>", "x\ny"),
+            (
+                "Tom &amp; Jerry &lt;3 &#39;hi&#x27; &nbsp;",
+                "Tom & Jerry <3 'hi'",
+            ),
+            (
+                "<style>p { color: red }</style><script>alert(1)</script>Text",
+                "Text",
+            ),
+            (
+                "<html><head><title>T</title></head><body>  spaced    out  </body></html>",
+                "spaced out",
+            ),
+            ("<table><tr><td>a</td><td>b</td></tr></table>", "a b"),
+            ("fish &chips; & more", "fish &chips; & more"),
+            ("unclosed <b", "unclosed"),
+            ("", ""),
+        ];
+        for (html, text) in cases {
+            assert_eq!(html_to_text(html), text, "html {html:?}");
+        }
+        let copy = Snapshot {
+            types: types(&[UTI_HTML]),
+            html: Some(b"<p>Only <i>HTML</i></p>".to_vec()),
+            ..Default::default()
+        };
+        let item = build_item(copy, None).unwrap();
+        assert_eq!(item.kind, Some(Kind::Text));
+        assert_eq!(item.text.as_deref(), Some("Only HTML"));
+        assert!(item.rich.is_some(), "the HTML is kept for formatted pastes");
     }
 
     #[test]

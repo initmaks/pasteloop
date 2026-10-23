@@ -1,7 +1,9 @@
-//! One-time migration from the Paste app (`com.wiheads.paste-setapp`). Paste keeps its clips in
-//! a Core Data SQLite store. This opens it read-only, decodes each clip's pasteboard payload,
-//! rebuilds the item through the same classifier the poller uses, and inserts it with its
-//! timestamp, custom title, source app, and collection.
+//! One-time migration from the Paste app. Paste keeps its clips in a Core Data SQLite store
+//! (`db.sqlite`), with payloads too large for a row in files beside it. This opens the store
+//! read-only, decodes each clip's pasteboard payload, rebuilds the item through the same
+//! classifier the poller uses, and inserts it with its timestamp, custom title, source app, and
+//! collection. Clips already in the library (same content) are left as they are, so running it
+//! again only adds what is missing.
 
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -27,12 +29,24 @@ pub struct ImportStats {
     pub collections_created: usize,
 }
 
+/// Where Paste keeps its store, relative to the home folder: the Mac App Store edition (in its
+/// sandbox container), then the Setapp edition.
+const PASTE_DBS: [&str; 2] = [
+    "Library/Containers/com.wiheads.paste/Data/Library/Application Support/Paste/db.sqlite",
+    "Library/Application Support/com.wiheads.paste-setapp/db.sqlite",
+];
+
+/// The largest decoded payload read for one clip; the live capture keeps nothing larger than
+/// `clipboard::MAX_TOTAL_BYTES` either.
+const MAX_PAYLOAD: usize = 256 * 1024 * 1024;
+
 /// The Paste database for this user, if the app's data is present.
 pub fn default_paste_db() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    let path =
-        Path::new(&home).join("Library/Application Support/com.wiheads.paste-setapp/db.sqlite");
-    path.exists().then_some(path)
+    PASTE_DBS
+        .iter()
+        .map(|rel| Path::new(&home).join(rel))
+        .find(|p| p.exists())
 }
 
 /// Imports up to `limit` most-recent clips from Paste at `db` into `store`. With `dry_run`, it
@@ -77,6 +91,11 @@ pub fn import_from_paste(
     )?;
     let mut rows = q.query([])?;
 
+    // Core Data keeps large payloads in files next to the store.
+    let external = db
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(".db_SUPPORT/_EXTERNAL_DATA");
     let mut stats = ImportStats::default();
     let mut collection_ids: HashMap<i64, i64> = HashMap::new();
     let palette = crate::cards::COLLECTION_PALETTE;
@@ -93,7 +112,7 @@ pub fn import_from_paste(
         let bundle: Option<String> = row.get(4)?;
         let app_name: Option<String> = row.get(5)?;
 
-        let Some(snap) = parse_pasteboard(&blob) else {
+        let Some(snap) = parse_pasteboard(&blob, &external) else {
             stats.skipped += 1;
             continue;
         };
@@ -176,21 +195,26 @@ pub fn import_from_paste(
 
 /// Builds a [`Snapshot`] from a Paste pasteboard payload, or `None` when it cannot be read.
 ///
-/// The payload is a one-byte prefix, then the pasteboard data. Prefix 0x01 is inline; 0x02 is a
-/// reference to another clip, which is not resolved. Inline data is a binary plist (raw or LZFSE,
-/// magic `bvx`) or zlib-compressed JSON with base64 values, both shaped
-/// `[{ types, dataByType: { uti: <bytes> } }]`.
-fn parse_pasteboard(blob: &[u8]) -> Option<Snapshot> {
-    if blob.first() != Some(&1) {
-        return None;
-    }
-    let body = &blob[1..];
+/// The column is Core Data's external-storage format: a one-byte prefix, then either the data
+/// inline (0x01) or the name of a file in `external` holding it (0x02, a UUID). The data is a
+/// binary plist (raw or LZFSE, magic `bvx`) or raw-DEFLATE-compressed plist or JSON with base64
+/// values, all shaped `[{ types, dataByType: { uti: <bytes> } }]`.
+fn parse_pasteboard(blob: &[u8], external: &Path) -> Option<Snapshot> {
+    let stored;
+    let body = match blob.split_first()? {
+        (1, inline) => inline,
+        (2, name) => {
+            stored = read_external(external, name)?;
+            &stored[..]
+        }
+        _ => return None,
+    };
     let data_by_type = if body.starts_with(b"bplist00") {
         plist_data_by_type(body)?
     } else if body.starts_with(b"bvx") {
-        plist_data_by_type(&crate::macos::lzfse_decode(body)?)?
+        plist_data_by_type(&crate::macos::lzfse_decode(body, MAX_PAYLOAD)?)?
     } else {
-        let decoded = crate::macos::zlib_decode(body)?;
+        let decoded = crate::macos::zlib_decode(body, MAX_PAYLOAD)?;
         if decoded.starts_with(b"bplist00") {
             plist_data_by_type(&decoded)?
         } else {
@@ -198,6 +222,32 @@ fn parse_pasteboard(blob: &[u8]) -> Option<Snapshot> {
         }
     };
     Some(snapshot_from(data_by_type))
+}
+
+/// The bytes of an externally stored payload. Its name comes from the store, so only a UUID is
+/// accepted as a file name, and the file is size-capped.
+fn read_external(dir: &Path, name: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let name = std::str::from_utf8(name).ok()?.trim_end_matches('\0');
+    if !is_uuid(name) {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(dir.join(name))
+        .ok()?
+        .take(MAX_PAYLOAD as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= MAX_PAYLOAD).then_some(bytes)
+}
+
+/// `8-4-4-4-12` hex digits, as Core Data names its external files.
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
 }
 
 /// `dataByType` (uti -> bytes) from a binary-plist pasteboard payload.
@@ -269,4 +319,72 @@ fn file_url_to_path(bytes: &[u8]) -> Option<String> {
         .ok()?
         .to_str()
         .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A Paste payload as a binary plist: `[{ dataByType: { uti: bytes } }]`.
+    fn payload(uti: &str, bytes: &[u8]) -> Vec<u8> {
+        let mut data = plist::Dictionary::new();
+        data.insert(uti.into(), plist::Value::Data(bytes.to_vec()));
+        let mut item = plist::Dictionary::new();
+        item.insert("dataByType".into(), plist::Value::Dictionary(data));
+        let mut out = Vec::new();
+        plist::to_writer_binary(&mut out, &vec![plist::Value::Dictionary(item)]).unwrap();
+        out
+    }
+
+    #[test]
+    fn inline_and_external_payloads_both_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut inline = vec![1u8];
+        inline.extend(payload(UTI_UTF8, b"inline text"));
+        let snap = parse_pasteboard(&inline, dir.path()).unwrap();
+        assert_eq!(snap.text.as_deref(), Some("inline text"));
+
+        let name = "9BDC0A4E-A5E5-4C36-A922-8DAAB77EE3B3";
+        std::fs::write(dir.path().join(name), payload(UTI_UTF8, b"stored outside")).unwrap();
+        let mut pointer = vec![2u8];
+        pointer.extend(name.as_bytes());
+        pointer.push(0);
+        let snap = parse_pasteboard(&pointer, dir.path()).unwrap();
+        assert_eq!(snap.text.as_deref(), Some("stored outside"));
+
+        let mut missing = vec![2u8];
+        missing.extend(b"00000000-0000-0000-0000-000000000000");
+        assert!(parse_pasteboard(&missing, dir.path()).is_none());
+        assert!(parse_pasteboard(&[3, 1, 2], dir.path()).is_none());
+        assert!(parse_pasteboard(&[], dir.path()).is_none());
+    }
+
+    #[test]
+    fn an_external_name_must_be_a_uuid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("external");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(tmp.path().join("secret"), payload(UTI_UTF8, b"outside")).unwrap();
+        for name in [
+            "../secret",
+            "/etc/hosts",
+            "9BDC0A4E-A5E5-4C36-A922-8DAAB77EE3B",
+            "9BDC0A4E_A5E5-4C36-A922-8DAAB77EE3B3",
+        ] {
+            let mut pointer = vec![2u8];
+            pointer.extend(name.as_bytes());
+            assert!(parse_pasteboard(&pointer, &dir).is_none(), "{name}");
+        }
+        assert!(is_uuid("9bdc0a4e-a5e5-4c36-a922-8daab77ee3b3"));
+    }
+
+    #[test]
+    fn decoding_stops_at_the_size_ceiling() {
+        // 300 KB of zeros compresses to almost nothing; a 64 KB ceiling refuses it.
+        let zeros = vec![0u8; 300 * 1024];
+        let mut packed = Vec::new();
+        crate::macos::lzfse_stream(&mut zeros.as_slice(), &mut packed, true).unwrap();
+        assert_eq!(crate::macos::lzfse_decode(&packed, 1 << 20).unwrap(), zeros);
+        assert!(crate::macos::lzfse_decode(&packed, 64 * 1024).is_none());
+    }
 }

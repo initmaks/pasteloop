@@ -865,14 +865,15 @@ const COMPRESSION_ZLIB: i32 = 0x205;
 const COMPRESSION_LZFSE: i32 = 0x801;
 
 /// Decodes a raw LZFSE stream (the `bvx…` block format), used by the Paste app's newer payloads.
-pub fn lzfse_decode(src: &[u8]) -> Option<Vec<u8>> {
-    compression_decode(src, COMPRESSION_LZFSE)
+/// `None` when it does not decode or would exceed `max` bytes.
+pub fn lzfse_decode(src: &[u8], max: usize) -> Option<Vec<u8>> {
+    compression_decode(src, COMPRESSION_LZFSE, max)
 }
 
 /// Decodes a raw DEFLATE stream (Apple's `COMPRESSION_ZLIB`), used by the Paste app's JSON
-/// payloads.
-pub fn zlib_decode(src: &[u8]) -> Option<Vec<u8>> {
-    compression_decode(src, COMPRESSION_ZLIB)
+/// payloads. `None` when it does not decode or would exceed `max` bytes.
+pub fn zlib_decode(src: &[u8], max: usize) -> Option<Vec<u8>> {
+    compression_decode(src, COMPRESSION_ZLIB, max)
 }
 
 /// Compresses (`encode`) or decompresses everything `input` yields into `output` with LZFSE,
@@ -958,7 +959,7 @@ pub fn lzfse_stream(
 }
 
 /// Decompresses `src` with an Apple Compression algorithm into a right-sized buffer.
-fn compression_decode(src: &[u8], algorithm: i32) -> Option<Vec<u8>> {
+fn compression_decode(src: &[u8], algorithm: i32, max: usize) -> Option<Vec<u8>> {
     // SAFETY: `compression_decode_buffer` from libcompression; declared with its C signature.
     #[link(name = "compression")]
     unsafe extern "C" {
@@ -992,11 +993,15 @@ fn compression_decode(src: &[u8], algorithm: i32) -> Option<Vec<u8>> {
         if n == 0 {
             return None;
         }
-        if n < cap || cap >= 64 * 1024 * 1024 {
+        if n < cap {
             dst.truncate(n);
             return Some(dst);
         }
-        cap *= 4; // buffer may have been too small; grow and retry.
+        // A full buffer may mean the output was cut short: grow and retry, up to `max`.
+        if cap >= max {
+            return None;
+        }
+        cap = (cap * 4).min(max);
     }
 }
 
