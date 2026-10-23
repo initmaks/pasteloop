@@ -154,7 +154,9 @@ static INSTANCE_LOCK: OnceLock<std::fs::File> = OnceLock::new();
 /// Keeps a second GUI instance from starting: both would register the same hotkey and fight for
 /// key focus, so an injected paste could land in the other panel. Takes an exclusive lock on
 /// `pasteloop.lock` in `data_dir()` (released by the OS at exit), so `PASTELOOP_DATA_DIR` instances do
-/// not block the real app. Returns false when another instance holds it.
+/// not block the real app. A previous instance may still be finishing its backup after quitting
+/// (see `quit_after_backup`), so this waits up to `BACKUP_AT_QUIT` for it. Returns false when
+/// another instance still holds it.
 fn acquire_single_instance_lock() -> bool {
     let dir = settings::data_dir();
     if std::fs::create_dir_all(&dir).is_err() {
@@ -168,8 +170,15 @@ fn acquire_single_instance_lock() -> bool {
         Ok(f) => f,
         Err(_) => return true,
     };
-    if file.try_lock().is_err() {
-        return false;
+    let started = Instant::now();
+    while file.try_lock().is_err() {
+        if started.elapsed() > BACKUP_AT_QUIT + Duration::from_secs(2) {
+            return false;
+        }
+        if started.elapsed() < Duration::from_millis(300) {
+            info!("waiting for the previous instance to finish quitting");
+        }
+        std::thread::sleep(Duration::from_millis(250));
     }
     let _ = INSTANCE_LOCK.set(file);
     true
@@ -906,9 +915,11 @@ fn set_backup_status(state: &Entity<AppState>, status: BackupStatus, cx: &mut As
     });
 }
 
-/// Quits, first backing up changes that are not in iCloud Drive yet (waiting at most
-/// `BACKUP_AT_QUIT`).
+/// Quits at once as far as the user can see: windows close, the menu-bar icon and the hotkeys go
+/// away, capture stops. The process then finishes a backup of changes not in iCloud Drive yet
+/// (for at most `BACKUP_AT_QUIT`) before it exits; a relaunch meanwhile waits for it.
 fn quit_after_backup(cx: &mut App) {
+    leave_quietly(cx);
     let state = panel_window(cx).and_then(|p| p.update(cx, |v, _, _| v.state().clone()).ok());
     let Some(state) = state else {
         cx.quit();
@@ -953,6 +964,34 @@ fn quit_after_backup(cx: &mut App) {
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// Everything a quit shows, done before the process actually exits.
+fn leave_quietly(cx: &mut App) {
+    if let Some(panel) = panel_window(cx) {
+        panel
+            .update(cx, |view, _, cx| {
+                view.hide(cx);
+                view.state().update(cx, |s, _| s.pause_for(None));
+            })
+            .ok();
+    }
+    for window in cx.windows() {
+        if Some(window) != panel_window(cx).map(|p| p.into()) {
+            window
+                .update(cx, |_, window, _| window.remove_window())
+                .ok();
+        }
+    }
+    // Dropping them removes the menu-bar item and unregisters the hotkeys. A second quit finds
+    // them gone already.
+    if cx.has_global::<StatusItemHolder>() {
+        cx.remove_global::<StatusItemHolder>();
+    }
+    if cx.has_global::<Hotkeys>() {
+        cx.remove_global::<Hotkeys>();
+    }
+    info!("quitting; status item and hotkeys released");
 }
 
 /// Hides the panel on any click outside our windows (see `OutsideClickMonitor`).

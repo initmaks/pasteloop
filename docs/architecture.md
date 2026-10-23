@@ -149,8 +149,11 @@ corrupts it.
 A worker thread at utility priority checks every five minutes. A change fingerprint (counts and
 latest timestamps of items, recognized text, link titles, deletions, collections) says whether
 anything is not yet backed up. A backup runs after 30 minutes without changes, after 5 when
-items were removed, at least every 6 hours while changes keep coming, and before quitting (up
-to 20 seconds). A first backup copies every blob; later ones take a few seconds.
+items were removed, at least every 6 hours while changes keep coming, and on quit. Quitting
+first closes the windows, removes the menu-bar item, and unregisters the hotkeys, so the app is
+gone as far as the user can tell; the process then finishes the backup (for at most 20 seconds)
+and exits. A relaunch in the meantime waits for the single-instance lock instead of giving up.
+A first backup copies every blob; later ones take a few seconds.
 
 Restore: a library younger than 14 days that finds a backup of another library more than
 twice its size merges it in (`Store::merge_snapshot`). Items already present (same id or same

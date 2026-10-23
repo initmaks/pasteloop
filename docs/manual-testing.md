@@ -20,6 +20,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 5 | Copy `235442` | Text card, not a color | `captured Text` |
 | 5b | Copy text on an iPhone signed in to the same Apple Account (Handoff on), wait a few seconds | A text card appears; the bar never freezes while macOS fetches it | `pasteboard changed with no types yet; waiting for them`, then `pasteboard types arrived after the change` and `captured Text` |
 | 5c | In Safari, Share → Copy (a link carrying only a URL) | A link card | `captured Link` |
+| 5d | Take a screenshot with a tool that copies the file (CleanShot), or copy an image file in Finder; then delete the file | The card shows the picture with the file name below, and still does after the file is gone; Space previews it; searching a word in the picture finds it | `captured File`, then `ocr: N chars for item` |
 | 6 | Copy a password from 1Password/Bitwarden/Apple Passwords | No card | `skipped: Concealed` |
 | 7 | Copy the same text twice | One card, moved to the front | `new=false` |
 | 8 | Panel open, press Right/Left, Cmd-Down, then Up (also Home, Cmd-Up), Shift-Right | Selection ring moves; Cmd-Down jumps to the last card; Up scrolls back to the first card and selects it; multi-selection rings | — |
@@ -134,7 +135,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 3 | Settings → General | The switch is on; the line reads "Last backup: … · N items · uploading", then "· in iCloud" | — |
 | 4 | Copy something, then wait 30 minutes (or press Back Up Now) | A new backup with 0 or 1 blobs copied, in seconds | `backup: …` |
 | 5 | Delete an image card, wait 5 minutes | The next backup prunes its blob | `… 1 pruned …` |
-| 6 | Copy something and quit within a minute | Quitting waits for the backup | `backed up before quitting` |
+| 6 | Copy something, then quit from the menu-bar menu, and reopen PasteLoop right away | The bar and the menu-bar icon disappear at once; the reopened app starts once the old one has finished its backup | `quitting; status item and hotkeys released`, `backed up before quitting`, then `waiting for the previous instance to finish quitting` |
 | 7 | New Mac, or a test user account signed in to the same iCloud: install, turn backup on | History, collections, and settings come back; toast "Restored N items from iCloud Drive"; image cards fill in as files download | `restoring N items backed up on …`, `restore: merged N items …` |
 | 8 | System Settings → Privacy & Security → Files and Folders: turn iCloud Drive off for PasteLoop | Settings shows "Last backup failed: allow PasteLoop under …" | `backup: access to iCloud Drive denied` |
 
