@@ -27,6 +27,8 @@ pub struct ImportStats {
     pub imported: usize,
     pub skipped: usize,
     pub collections_created: usize,
+    /// File items already imported that got the picture Paste kept with them.
+    pub previews_added: usize,
 }
 
 /// Where Paste keeps its store, relative to the home folder: the Mac App Store edition (in its
@@ -157,8 +159,18 @@ pub fn import_from_paste(
             }
         };
         if !was_new {
-            // Already in PasteLoop: keep that copy's time, but still honor the collection.
+            // Already in PasteLoop: keep that copy's time, but still honor the collection, and
+            // give a file the picture an earlier import left out.
             stats.skipped += 1;
+            if item.image_blob.is_none()
+                && let Some(image) = &new.image
+            {
+                match store.set_file_preview(item.id, image) {
+                    Ok(true) => stats.previews_added += 1,
+                    Ok(false) => {}
+                    Err(err) => warn!("import: preview for item {} failed: {err:#}", item.id),
+                }
+            }
         }
         if let Some(list_pk) = list
             && let Some((name, is_history)) = lists.get(&list_pk)
@@ -198,8 +210,8 @@ pub fn import_from_paste(
         }
     }
     info!(
-        "import from Paste: imported={} skipped={} collections={}",
-        stats.imported, stats.skipped, stats.collections_created
+        "import from Paste: imported={} skipped={} collections={} previews={}",
+        stats.imported, stats.skipped, stats.collections_created, stats.previews_added
     );
     Ok(stats)
 }
@@ -441,6 +453,69 @@ mod tests {
         assert_eq!(collections.len(), 1);
         assert_eq!(store.count_collection_items(collections[0].id).unwrap(), 2);
         assert_eq!(store.count_items().unwrap(), 2);
+    }
+
+    /// A Paste store holding one clip with the given inline payload.
+    fn paste_with(dir: &Path, data: &[(&str, &[u8])]) -> PathBuf {
+        let db = dir.join("db.sqlite");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ZLISTENTITY (Z_PK INTEGER PRIMARY KEY, ZNAME TEXT, ZRAWTYPE INTEGER);
+             CREATE TABLE ZAPPLICATIONENTITY (Z_PK INTEGER PRIMARY KEY, ZBUNDLEIDENTIFIER TEXT, ZNAME TEXT);
+             CREATE TABLE ZITEMENTITY (Z_PK INTEGER PRIMARY KEY, ZTITLE TEXT, ZCREATEDAT REAL,
+               ZLIST INTEGER, ZSOURCEAPPLICATION INTEGER);
+             CREATE TABLE ZITEMDATAENTITY (Z_PK INTEGER PRIMARY KEY, ZITEM INTEGER, ZRAWPASTEBOARDITEMS BLOB);
+             INSERT INTO ZITEMENTITY VALUES (1, NULL, 700000000, NULL, NULL);",
+        )
+        .unwrap();
+        let mut by_type = plist::Dictionary::new();
+        for (uti, bytes) in data {
+            by_type.insert((*uti).into(), plist::Value::Data(bytes.to_vec()));
+        }
+        let mut item = plist::Dictionary::new();
+        item.insert("dataByType".into(), plist::Value::Dictionary(by_type));
+        let mut blob = vec![1u8];
+        plist::to_writer_binary(&mut blob, &vec![plist::Value::Dictionary(item)]).unwrap();
+        conn.execute(
+            "INSERT INTO ZITEMDATAENTITY VALUES (1, 1, ?1)",
+            rusqlite::params![blob],
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn importing_again_gives_an_imported_file_its_picture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(&tmp.path().join("lib")).unwrap();
+        let url = b"file:///Users/someone/Desktop/gone.png";
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(20, 10, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+
+        // An earlier import that left the picture out.
+        std::fs::create_dir_all(tmp.path().join("before")).unwrap();
+        let before = paste_with(&tmp.path().join("before"), &[(UTI_FILE_URL, url)]);
+        assert_eq!(
+            import_from_paste(&store, &before, None, false)
+                .unwrap()
+                .imported,
+            1
+        );
+        let file = store.history(None, 1).unwrap().remove(0);
+        assert!(file.image_blob.is_none());
+
+        std::fs::create_dir_all(tmp.path().join("now")).unwrap();
+        let now = paste_with(
+            &tmp.path().join("now"),
+            &[(UTI_FILE_URL, url), (UTI_PNG, &png)],
+        );
+        let stats = import_from_paste(&store, &now, None, false).unwrap();
+        assert_eq!((stats.imported, stats.previews_added), (0, 1));
+        let file = store.get(file.id).unwrap().unwrap();
+        assert_eq!((file.image_w, file.image_h), (Some(20), Some(10)));
+        assert_eq!(store.count_items().unwrap(), 1);
     }
 
     #[test]

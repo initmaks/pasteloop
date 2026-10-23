@@ -288,6 +288,7 @@ fn start(launched: Instant, cx: &mut App) -> Result<()> {
     spawn_poller(state.clone(), link_tx, cx);
     spawn_maintenance(state.clone(), panel, cx);
     spawn_backup(state.clone(), panel, cx);
+    spawn_file_preview_fill(state.clone(), cx);
     watch_outside_clicks(panel, cx);
     info!(
         "ready after {:.1} ms",
@@ -1027,7 +1028,8 @@ fn spawn_item_jobs(
         (Arc::clone(&s.store), s.settings.link_previews_network)
     });
     match item.kind {
-        crate::store::Kind::Image => {
+        // Images, and files that came with a picture: recognize their text for search.
+        crate::store::Kind::Image | crate::store::Kind::File if item.image_blob.is_some() => {
             let state = state.clone();
             let task = cx.background_executor().spawn(async move {
                 match jobs::ocr_item(&store, &item) {
@@ -1058,6 +1060,31 @@ fn spawn_item_jobs(
         }
         _ => {}
     }
+}
+
+/// Once per launch, in the background: pictures for file cards whose image file is still on
+/// disk, and recognized text for file pictures that have none yet (a re-run Paste import adds
+/// pictures without it).
+fn spawn_file_preview_fill(state: Entity<AppState>, cx: &mut App) {
+    let store = Arc::clone(&state.read(cx).store);
+    cx.spawn(async move |cx| {
+        let filled = backup::run_worker(move || jobs::fill_file_previews(&store)).await;
+        match filled {
+            Ok(Ok((0, 0))) => {}
+            Ok(Ok((previews, recognized))) => {
+                info!("file previews: {previews} added, text recognized in {recognized}");
+                cx.update(|cx| {
+                    state.update(cx, |s, cx| {
+                        s.reload_list();
+                        cx.notify();
+                    })
+                });
+            }
+            Ok(Err(err)) => warn!("file previews failed: {err:#}"),
+            Err(_) => warn!("file preview worker stopped"),
+        }
+    })
+    .detach();
 }
 
 /// How long a copy may show an empty type list before it is given up on. A copy made on an

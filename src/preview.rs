@@ -33,9 +33,6 @@ const GAP: f64 = 8.0;
 /// Text files larger than this show as a file, not as text.
 const MAX_TEXT_FILE: u64 = 1024 * 1024;
 
-const IMAGE_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "webp", "bmp",
-];
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "md", "markdown", "csv", "tsv", "log", "json", "toml", "yaml", "yml", "xml", "html",
     "css", "js", "ts", "tsx", "jsx", "rs", "py", "rb", "go", "java", "kt", "swift", "c", "h",
@@ -57,8 +54,9 @@ fn single_file(item: &Item) -> Option<&str> {
     }
 }
 
+/// The single file of a file item when it is an image still on disk.
 fn image_file(item: &Item) -> Option<&str> {
-    single_file(item).filter(|p| has_extension(p, IMAGE_EXTENSIONS))
+    single_file(item).filter(|p| crate::clipboard::is_image_path(p) && Path::new(p).exists())
 }
 
 fn text_file(item: &Item) -> Option<&str> {
@@ -72,10 +70,14 @@ fn text_file(item: &Item) -> Option<&str> {
 fn image_pixels(item: &Item) -> Option<(f64, f64)> {
     match item.kind {
         Kind::Image => Some((item.image_w? as f64, item.image_h? as f64)),
-        Kind::File => {
-            let (w, h) = image::image_dimensions(image_file(item)?).ok()?;
-            Some((w as f64, h as f64))
-        }
+        Kind::File => match image_file(item) {
+            Some(path) => {
+                let (w, h) = image::image_dimensions(path).ok()?;
+                Some((w as f64, h as f64))
+            }
+            // The file is gone; the picture kept of it.
+            None => Some((item.image_w? as f64, item.image_h? as f64)),
+        },
         _ => None,
     }
     .filter(|(w, h)| *w > 0.0 && *h > 0.0)
@@ -190,7 +192,10 @@ impl Render for PreviewView {
             .map(|i| self.text_for(i, &store));
         let image = item.as_ref().and_then(|i| match i.kind {
             Kind::Image => self.image_for(i, &store, cx),
-            _ => image_file(i).map(PathBuf::from),
+            Kind::File => image_file(i)
+                .map(PathBuf::from)
+                .or_else(|| self.image_for(i, &store, cx)),
+            _ => None,
         });
         let body = match &item {
             Some(item) => image_cache(self.images.clone())

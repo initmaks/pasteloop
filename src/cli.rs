@@ -252,11 +252,12 @@ pub fn run_cli(args: &[String]) -> Result<()> {
             eprintln!("importing from {}…", db.display());
             let stats = crate::import::import_from_paste(&store, &db, limit, dry_run)?;
             println!(
-                "{} {} item(s), skipped {}, created {} collection(s)",
+                "{} {} item(s), skipped {}, created {} collection(s), added {} file preview(s)",
                 if dry_run { "would import" } else { "imported" },
                 stats.imported,
                 stats.skipped,
-                stats.collections_created
+                stats.collections_created,
+                stats.previews_added
             );
         }
         _ => return Err(anyhow!("{USAGE}")),

@@ -20,7 +20,7 @@ pub const PREVIEW_LONG_EDGE: u32 = 1600;
 /// Returns the PNG path, or `None` when the item has no image.
 pub fn ensure_thumbnail(store: &Store, item: &Item) -> Result<Option<PathBuf>> {
     let blob = match item.kind {
-        Kind::Image => item.image_blob.as_deref(),
+        Kind::Image | Kind::File => item.image_blob.as_deref(),
         Kind::Link => item.link_image_blob.as_deref(),
         _ => None,
     };
@@ -67,9 +67,9 @@ pub fn write_thumbnail(store: &Store, key: &str, png: &[u8]) -> Result<PathBuf> 
     Ok(path)
 }
 
-/// Decodes any supported image and re-encodes a PNG whose long edge is at most `long_edge`.
-/// Formats the `image` crate cannot read (HEIC) go through ImageIO first.
-pub fn thumbnail_png(bytes: &[u8], long_edge: u32) -> Result<Vec<u8>> {
+/// Decodes any supported image, at most `long_edge` pixels on its long side. Formats the
+/// `image` crate cannot read (HEIC) go through ImageIO first.
+fn decode_scaled(bytes: &[u8], long_edge: u32) -> Result<image::DynamicImage> {
     let decoded = match image::load_from_memory(bytes) {
         Ok(img) => img,
         Err(_) => {
@@ -78,14 +78,75 @@ pub fn thumbnail_png(bytes: &[u8], long_edge: u32) -> Result<Vec<u8>> {
             image::load_from_memory(&png)?
         }
     };
-    let small = if decoded.width() > long_edge || decoded.height() > long_edge {
-        decoded.thumbnail(long_edge, long_edge)
-    } else {
-        decoded
-    };
+    Ok(
+        if decoded.width() > long_edge || decoded.height() > long_edge {
+            decoded.thumbnail(long_edge, long_edge)
+        } else {
+            decoded
+        },
+    )
+}
+
+/// Decodes any supported image and re-encodes a PNG whose long edge is at most `long_edge`.
+pub fn thumbnail_png(bytes: &[u8], long_edge: u32) -> Result<Vec<u8>> {
     let mut out = Vec::new();
-    small.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)?;
+    decode_scaled(bytes, long_edge)?
+        .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)?;
     Ok(out)
+}
+
+/// Long edge of the picture kept for an image file, so its card still shows it after the file
+/// is gone (screenshots on the Desktop rarely stay). Large enough to read text in it.
+pub const FILE_PREVIEW_LONG_EDGE: u32 = 1600;
+
+/// A smaller copy of an image for keeping: JPEG, or PNG when it has transparency (a window
+/// screenshot's shadow), with its MIME type and size.
+pub fn preview_image(bytes: &[u8], long_edge: u32) -> Result<(Vec<u8>, &'static str, u32, u32)> {
+    let small = decode_scaled(bytes, long_edge)?;
+    let (w, h) = (small.width(), small.height());
+    let transparent = small.color().has_alpha() && small.to_rgba8().pixels().any(|p| p[3] < 255);
+    let mut out = Vec::new();
+    if transparent {
+        small.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)?;
+        Ok((out, "image/png", w, h))
+    } else {
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+            .encode_image(&small.to_rgb8())?;
+        Ok((out, "image/jpeg", w, h))
+    }
+}
+
+/// Gives file items whose image file is still on disk a picture, then recognizes text in file
+/// pictures that have none. Returns how many of each. Slow; for a background thread.
+pub fn fill_file_previews(store: &Store) -> Result<(usize, usize)> {
+    let mut previews = 0;
+    for item in store.file_items_without_preview()? {
+        if !item
+            .files
+            .iter()
+            .any(|p| crate::clipboard::is_image_path(p))
+        {
+            continue;
+        }
+        if let Some(image) = crate::clipboard::file_preview(&item.files, None)
+            && store.set_file_preview(item.id, &image)?
+        {
+            previews += 1;
+        }
+    }
+    let mut recognized = 0;
+    for id in store.file_previews_without_text()? {
+        let Some(item) = store.get(id)? else {
+            continue;
+        };
+        if ocr_item(store, &item)?.is_some() {
+            recognized += 1;
+        } else {
+            // Nothing readable (or too small): remember that, so the next launch skips it.
+            store.set_ocr_text(id, "")?;
+        }
+    }
+    Ok((previews, recognized))
 }
 
 /// Minimum side (px) for OCR; smaller images are icons and glyphs, not text.
@@ -93,7 +154,7 @@ pub const OCR_MIN_SIDE: i64 = 64;
 
 /// Runs Vision on an image item and stores the recognized text for search. Returns the text.
 pub fn ocr_item(store: &Store, item: &Item) -> Result<Option<String>> {
-    if item.kind != Kind::Image
+    if !matches!(item.kind, Kind::Image | Kind::File)
         || item.image_w.unwrap_or(0) < OCR_MIN_SIDE
         || item.image_h.unwrap_or(0) < OCR_MIN_SIDE
     {
@@ -122,6 +183,19 @@ mod tests {
             .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
             .unwrap();
         out
+    }
+
+    #[test]
+    fn kept_pictures_are_jpeg_unless_transparent_and_capped_in_size() {
+        let opaque = png(3200, 1000, [10, 20, 30, 255]);
+        let (bytes, mime, w, h) = preview_image(&opaque, FILE_PREVIEW_LONG_EDGE).unwrap();
+        assert_eq!((mime, w, h), ("image/jpeg", 1600, 500));
+        assert!(bytes.starts_with(&[0xFF, 0xD8]), "a JPEG");
+        let shadowed = png(100, 80, [0, 0, 0, 40]);
+        let (bytes, mime, w, h) = preview_image(&shadowed, FILE_PREVIEW_LONG_EDGE).unwrap();
+        assert_eq!((mime, w, h), ("image/png", 100, 80));
+        assert!(bytes.starts_with(b"\x89PNG"));
+        assert!(preview_image(b"not an image", 100).is_err());
     }
 
     #[test]

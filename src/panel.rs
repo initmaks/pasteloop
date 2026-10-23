@@ -256,12 +256,12 @@ pub struct PanelView {
     height: f32,
     shown_at: Option<Instant>,
     now_ms: i64,
-    /// Items whose thumbnail (see `Item::thumb_key`) is on disk, so a frame never stats. Keyed by
-    /// item: content deleted and copied again comes back as a new item and is checked afresh.
+    /// Thumbnail keys (see `Item::thumb_key`) whose file is on disk, so a frame never stats.
+    /// Keyed by thumbnail rather than item, since a file card's changes when it gets a picture.
     /// Shared with the frame's card closure; copied only when a thumbnail lands.
-    thumbs_ready: Rc<HashSet<i64>>,
-    /// Items whose thumbnail is being made, or failed; a failure is not retried this session.
-    thumbs_tried: HashSet<i64>,
+    thumbs_ready: Rc<HashSet<String>>,
+    /// Thumbnails being made, or failed; a failure is not retried this session.
+    thumbs_tried: HashSet<String>,
     /// Decoded card images, bounded (see `CardImageCache`).
     image_cache: Entity<CardImageCache>,
     /// The toolbar's position counter.
@@ -1964,23 +1964,24 @@ impl PanelView {
     fn ensure_thumbnails(&mut self, items: &[Item], cx: &mut Context<Self>) {
         let store = Arc::clone(&self.state.read(cx).store);
         for item in items {
-            let Some(key) = item.thumb_key() else {
+            // Keyed by thumbnail, not item: a file card's thumbnail changes once it gets a
+            // picture.
+            let Some(key) = item.thumb_key().map(str::to_string) else {
                 continue;
             };
-            let id = item.id;
-            if self.thumbs_ready.contains(&id) || self.thumbs_tried.contains(&id) {
+            if self.thumbs_ready.contains(&key) || self.thumbs_tried.contains(&key) {
                 continue;
             }
-            if store.thumb_path(key).exists() {
-                Rc::make_mut(&mut self.thumbs_ready).insert(id);
+            if store.thumb_path(&key).exists() {
+                Rc::make_mut(&mut self.thumbs_ready).insert(key);
                 continue;
             }
-            self.thumbs_tried.insert(id);
+            self.thumbs_tried.insert(key.clone());
             let item = item.clone();
             let store = Arc::clone(&store);
             cx.spawn(async move |this, cx| {
                 let file_icon = match item.kind {
-                    Kind::File => item
+                    Kind::File if item.image_blob.is_none() => item
                         .files
                         .first()
                         .and_then(|p| macos::file_icon_png(p, 64.0)),
@@ -2004,8 +2005,8 @@ impl PanelView {
                     if let Some(this) = this.upgrade() {
                         this.update(cx, |this, cx| {
                             if made {
-                                this.thumbs_tried.remove(&id);
-                                Rc::make_mut(&mut this.thumbs_ready).insert(id);
+                                this.thumbs_tried.remove(&key);
+                                Rc::make_mut(&mut this.thumbs_ready).insert(key);
                                 cx.notify();
                             }
                         });
@@ -2503,7 +2504,7 @@ impl PanelView {
             let item = &items[ix];
             let thumb = item
                 .thumb_key()
-                .filter(|_| thumbs_ready.contains(&item.id))
+                .filter(|key| thumbs_ready.contains(*key))
                 .map(|key| store.thumb_path(key));
             let collection_colors: Vec<gpui::Hsla> = if searching || matches!(tab, Tab::History) {
                 item.collection_ids

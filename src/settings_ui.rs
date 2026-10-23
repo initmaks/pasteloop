@@ -1112,8 +1112,8 @@ impl SettingsView {
                 .await;
             let message = match &result {
                 Ok(s) => format!(
-                    "Imported {} item(s) and {} collection(s); skipped {}.",
-                    s.imported, s.collections_created, s.skipped
+                    "Imported {} item(s) and {} collection(s), added {} file preview(s); skipped {}.",
+                    s.imported, s.collections_created, s.previews_added, s.skipped
                 ),
                 Err(err) => format!("Migration failed: {err}"),
             };

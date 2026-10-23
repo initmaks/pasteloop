@@ -433,6 +433,19 @@ fn render_header(item: &Item, props: &CardProps) -> Div {
         .child(div().flex_shrink_0().child(item.kind.as_str()))
 }
 
+/// The box an image card's picture sits in, filling the card body.
+fn picture_frame(theme: &Theme) -> Div {
+    div()
+        .flex_1()
+        .min_h(px(0.))
+        .rounded(px(4.))
+        .overflow_hidden()
+        .bg(theme.field)
+        .flex()
+        .items_center()
+        .justify_center()
+}
+
 fn render_body(item: &Item, props: &CardProps) -> Div {
     let theme = props.theme;
     let body = div()
@@ -489,15 +502,7 @@ fn render_body(item: &Item, props: &CardProps) -> Div {
             )
         }
         Kind::Image => {
-            let frame = div()
-                .flex_1()
-                .min_h(px(0.))
-                .rounded(px(4.))
-                .overflow_hidden()
-                .bg(theme.field)
-                .flex()
-                .items_center()
-                .justify_center();
+            let frame = picture_frame(theme);
             body.flex().child(match &props.thumb {
                 Some(thumb) => frame.child(
                     img(thumb.clone())
@@ -511,6 +516,44 @@ fn render_body(item: &Item, props: &CardProps) -> Div {
                         .text_color(theme.text_tertiary),
                 ),
             })
+        }
+        // A file that came with a picture (a screenshot, a photo): the picture, then the name.
+        Kind::File if item.image_blob.is_some() && props.thumb.is_some() => {
+            let names = match item.files.as_slice() {
+                [one] => crate::store::file_name(one).to_string(),
+                [first, rest @ ..] => {
+                    format!("{} +{} more", crate::store::file_name(first), rest.len())
+                }
+                [] => String::new(),
+            };
+            body.flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    picture_frame(theme).child(
+                        img(props.thumb.clone().unwrap_or_default())
+                            .size_full()
+                            .object_fit(ObjectFit::Contain),
+                    ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.))
+                        .flex_shrink_0()
+                        .text_size(theme.scale(12.))
+                        .text_color(theme.text_secondary)
+                        .child(
+                            svg()
+                                .path("icons/file.svg")
+                                .size(px(12.))
+                                .text_color(theme.text_secondary)
+                                .flex_shrink_0(),
+                        )
+                        .child(div().truncate().child(SharedString::from(names))),
+                )
         }
         Kind::File => {
             let mut b = body.flex().flex_col().gap(px(6.));

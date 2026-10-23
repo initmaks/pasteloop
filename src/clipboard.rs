@@ -325,6 +325,44 @@ pub fn looks_like_code(text: &str) -> bool {
 /// Turns a snapshot into the row to store. Image bytes are normalized here (TIFF to PNG,
 /// oversized images downscaled). Fails with `Skip::TooLarge` over the capture cap and with
 /// `Skip::Unclassified` when no rule matches.
+/// File extensions of images a file card can show.
+pub const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "heic", "heif", "tif", "tiff", "webp", "bmp",
+];
+
+pub fn is_image_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// A picture for a file card: the first image file among `paths` while it is on disk, else an
+/// image the copy carried along (screenshot tools put the picture next to the file). Kept as a
+/// smaller copy, so the card keeps it after the file is moved or deleted.
+pub fn file_preview(paths: &[String], carried: Option<Vec<u8>>) -> Option<NewImage> {
+    use std::io::Read;
+    let from_disk = paths.iter().find(|p| is_image_path(p)).and_then(|p| {
+        let mut bytes = Vec::new();
+        std::fs::File::open(p)
+            .ok()?
+            .take(MAX_IMAGE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (bytes.len() <= MAX_IMAGE_BYTES).then_some(bytes)
+    });
+    let bytes = from_disk.or(carried)?;
+    let (bytes, mime, width, height) =
+        crate::jobs::preview_image(&bytes, crate::jobs::FILE_PREVIEW_LONG_EDGE).ok()?;
+    Some(NewImage {
+        png_or_original: bytes,
+        mime,
+        width: width as i64,
+        height: height as i64,
+        truncated: false,
+    })
+}
+
 pub fn build_item(
     mut snapshot: Snapshot,
     source: Option<&macos::FrontApp>,
@@ -359,6 +397,7 @@ pub fn build_item(
             if snapshot.file_paths.is_empty() {
                 return Err(Skip::Unclassified(snapshot.types));
             }
+            item.image = file_preview(&snapshot.file_paths, snapshot.image.map(|(b, _)| b));
             item.files = snapshot.file_paths;
         }
         Kind::Image => {
@@ -727,6 +766,41 @@ mod tests {
         assert_eq!(item.kind, Some(Kind::Text));
         assert_eq!(item.text.as_deref(), Some("Only HTML"));
         assert!(item.rich.is_some(), "the HTML is kept for formatted pastes");
+    }
+
+    #[test]
+    fn a_file_card_keeps_a_picture_of_an_image_file() {
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(40, 30, image::Rgba([200, 10, 10, 255]))
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let shot = dir.path().join("Screenshot.PNG");
+        std::fs::write(&shot, &png).unwrap();
+        let on_disk = vec![shot.to_string_lossy().to_string()];
+
+        // The file on disk wins; the picture survives the file's deletion.
+        let preview = file_preview(&on_disk, None).unwrap();
+        assert_eq!(
+            (preview.width, preview.height, preview.mime),
+            (40, 30, "image/jpeg")
+        );
+        std::fs::remove_file(&shot).unwrap();
+        assert!(file_preview(&on_disk, None).is_none());
+        // Gone from disk: the picture the copy carried.
+        assert!(file_preview(&on_disk, Some(png.clone())).is_some());
+        // Not an image file and nothing carried: no picture, the Finder icon instead.
+        assert!(file_preview(&["/tmp/notes.pdf".to_string()], None).is_none());
+
+        let copy = Snapshot {
+            types: types(&[UTI_FILE_URL, UTI_PNG]),
+            file_paths: on_disk,
+            image: Some((png, UTI_PNG)),
+            ..Default::default()
+        };
+        let item = build_item(copy, None).unwrap();
+        assert_eq!(item.kind, Some(Kind::File));
+        assert!(item.image.is_some());
     }
 
     #[test]

@@ -126,7 +126,8 @@ impl Item {
         match self.kind {
             Kind::Image => self.image_blob.as_deref(),
             Kind::Link => self.link_image_blob.as_deref(),
-            Kind::File => Some(&self.content_hash),
+            // A file's kept picture, else its Finder icon (cached under the content hash).
+            Kind::File => self.image_blob.as_deref().or(Some(&self.content_hash)),
             Kind::Text | Kind::Color => None,
         }
     }
@@ -740,6 +741,48 @@ impl Store {
             }
             tx.commit()?;
             load_item(c, id)?.ok_or_else(|| anyhow!("item vanished"))
+        })
+    }
+
+    /// Gives a file item a picture to show, unless it already has one. Returns whether it did.
+    pub fn set_file_preview(&self, id: i64, image: &NewImage) -> Result<bool> {
+        self.write(|conn| {
+            let tx = conn.transaction()?;
+            let blob = put_blob(&tx, &self.dir, &image.png_or_original, image.mime)?;
+            let set = tx.execute(
+                "UPDATE items SET image_blob = ?1, image_w = ?2, image_h = ?3 \
+                 WHERE id = ?4 AND kind = 'file' AND image_blob IS NULL",
+                params![blob, image.width, image.height, id],
+            )? == 1;
+            if !set {
+                release_blob(&tx, &blob)?;
+            }
+            tx.commit()?;
+            Ok(set)
+        })
+    }
+
+    /// Ids of live file items with a picture whose text has not been recognized yet.
+    pub fn file_previews_without_text(&self) -> Result<Vec<i64>> {
+        self.read(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id FROM items WHERE kind = 'file' AND image_blob IS NOT NULL \
+                 AND ocr_text IS NULL AND deleted_at IS NULL ORDER BY created_at DESC",
+            )?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+        })
+    }
+
+    /// Live file items without a picture, newest first, for filling one in later.
+    pub fn file_items_without_preview(&self) -> Result<Vec<Item>> {
+        self.read(|c| {
+            let mut stmt = c.prepare(&format!(
+                "SELECT {ITEM_COLUMNS} FROM items i WHERE kind = 'file' AND image_blob IS NULL \
+                 AND deleted_at IS NULL ORDER BY created_at DESC"
+            ))?;
+            let rows = stmt.query_map([], item_from_row)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 
@@ -1906,6 +1949,52 @@ mod tests {
         new.source_bundle_id = Some("com.apple.TextEdit".into());
         new.source_app_name = Some("TextEdit".into());
         store.insert(&new).expect("insert").0
+    }
+
+    #[test]
+    fn a_file_item_gets_one_picture() {
+        let (_d, store) = temp_store();
+        let (file, _) = store
+            .insert(&NewItem {
+                kind: Some(Kind::File),
+                files: vec!["/gone/shot.png".into()],
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            file.thumb_key(),
+            Some(file.content_hash.as_str()),
+            "the icon"
+        );
+        let picture = |byte: u8| NewImage {
+            png_or_original: vec![byte; 10],
+            mime: "image/jpeg",
+            width: 4,
+            height: 3,
+            truncated: false,
+        };
+        assert!(store.set_file_preview(file.id, &picture(1)).unwrap());
+        assert!(
+            !store.set_file_preview(file.id, &picture(2)).unwrap(),
+            "kept, not replaced"
+        );
+        let file = store.get(file.id).unwrap().unwrap();
+        let blob = file.image_blob.clone().unwrap();
+        assert_eq!(file.thumb_key(), Some(blob.as_str()));
+        assert_eq!((file.image_w, file.image_h), (Some(4), Some(3)));
+        let unused = blake3::hash(&[2; 10]).to_hex().to_string();
+        let refcount: i64 = store
+            .read(|c| {
+                Ok(c.query_row(
+                    "SELECT refcount FROM blobs WHERE id = ?1",
+                    params![unused],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(refcount, 0, "the refused picture is released");
+        assert_eq!(store.file_previews_without_text().unwrap(), vec![file.id]);
+        assert!(store.file_items_without_preview().unwrap().is_empty());
     }
 
     #[test]

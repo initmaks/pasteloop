@@ -477,6 +477,11 @@ fn read_pasteboard_data(pasteboard: &NSPasteboard, types: Vec<String>) -> Snapsh
                 snapshot.file_paths.push(path.to_string());
             }
         }
+        // A screenshot tool copies the picture next to the file; it becomes the card's preview.
+        let carried = [clipboard::UTI_PNG, clipboard::UTI_JPEG, clipboard::UTI_HEIC]
+            .into_iter()
+            .find(|t| has(t));
+        snapshot.image = carried.and_then(|uti| data_for(uti).map(|d| (d, uti)));
     } else if clipboard::image_wins(&types) {
         let uti = [
             clipboard::UTI_PNG,
