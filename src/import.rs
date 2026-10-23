@@ -168,11 +168,22 @@ pub fn import_from_paste(
             let collection = match collection_ids.get(&list_pk) {
                 Some(id) => *id,
                 None => {
-                    let color = palette[collection_ids.len() % palette.len()];
-                    let pb = store.create_collection(name, color)?;
-                    collection_ids.insert(list_pk, pb.id);
-                    stats.collections_created += 1;
-                    pb.id
+                    // A collection from an earlier import keeps its name; reuse it.
+                    let existing = store
+                        .collections()?
+                        .into_iter()
+                        .find(|c| c.name == *name)
+                        .map(|c| c.id);
+                    let id = match existing {
+                        Some(id) => id,
+                        None => {
+                            let color = palette[collection_ids.len() % palette.len()];
+                            stats.collections_created += 1;
+                            store.create_collection(name, color)?.id
+                        }
+                    };
+                    collection_ids.insert(list_pk, id);
+                    id
                 }
             };
             if let Err(err) = store.add_to_collection(item.id, collection) {
@@ -376,6 +387,63 @@ mod tests {
             assert!(parse_pasteboard(&pointer, &dir).is_none(), "{name}");
         }
         assert!(is_uuid("9bdc0a4e-a5e5-4c36-a922-8daab77ee3b3"));
+    }
+
+    /// A store shaped like Paste's: one pinboard "Work" holding an inline clip and a clip whose
+    /// payload sits in an external file.
+    fn fake_paste(dir: &Path) -> PathBuf {
+        let db = dir.join("db.sqlite");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE ZLISTENTITY (Z_PK INTEGER PRIMARY KEY, ZNAME TEXT, ZRAWTYPE INTEGER);
+             CREATE TABLE ZAPPLICATIONENTITY (Z_PK INTEGER PRIMARY KEY, ZBUNDLEIDENTIFIER TEXT, ZNAME TEXT);
+             CREATE TABLE ZITEMENTITY (Z_PK INTEGER PRIMARY KEY, ZTITLE TEXT, ZCREATEDAT REAL,
+               ZLIST INTEGER, ZSOURCEAPPLICATION INTEGER);
+             CREATE TABLE ZITEMDATAENTITY (Z_PK INTEGER PRIMARY KEY, ZITEM INTEGER, ZRAWPASTEBOARDITEMS BLOB);
+             INSERT INTO ZLISTENTITY VALUES (1, 'History', 1), (2, 'Work', 2);
+             INSERT INTO ZAPPLICATIONENTITY VALUES (1, 'com.apple.TextEdit', 'TextEdit');
+             INSERT INTO ZITEMENTITY VALUES (1, NULL, 700000000, 2, 1), (2, NULL, 700000100, 2, 1);",
+        )
+        .unwrap();
+        let mut inline = vec![1u8];
+        inline.extend(payload(UTI_UTF8, b"kept inline"));
+        let name = "0A1B2C3D-0000-4000-8000-00000000BEEF";
+        let external = dir.join(".db_SUPPORT/_EXTERNAL_DATA");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join(name), payload(UTI_UTF8, b"kept outside")).unwrap();
+        let mut pointer = vec![2u8];
+        pointer.extend(name.as_bytes());
+        pointer.push(0);
+        conn.execute(
+            "INSERT INTO ZITEMDATAENTITY VALUES (1, 1, ?1), (2, 2, ?2)",
+            rusqlite::params![inline, pointer],
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn importing_twice_adds_nothing_and_keeps_one_collection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = fake_paste(tmp.path());
+        let store = Store::open(&tmp.path().join("lib")).unwrap();
+
+        let first = import_from_paste(&store, &db, None, false).unwrap();
+        assert_eq!((first.imported, first.collections_created), (2, 1));
+        let texts: Vec<String> = store
+            .history(None, 10)
+            .unwrap()
+            .into_iter()
+            .filter_map(|i| i.text)
+            .collect();
+        assert_eq!(texts, vec!["kept outside", "kept inline"]);
+
+        let second = import_from_paste(&store, &db, None, false).unwrap();
+        assert_eq!((second.imported, second.collections_created), (0, 0));
+        let collections = store.collections().unwrap();
+        assert_eq!(collections.len(), 1);
+        assert_eq!(store.count_collection_items(collections[0].id).unwrap(), 2);
+        assert_eq!(store.count_items().unwrap(), 2);
     }
 
     #[test]
