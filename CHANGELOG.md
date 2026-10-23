@@ -5,12 +5,16 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 ## Unreleased
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
-- Every paste explains how to allow pasting into apps while Accessibility permission is missing, instead of silently copying; Don't Ask Again (or a Settings switch) turns that off.
-- Copies from an iPhone (Universal Clipboard) are captured: PasteLoop waits for their types to arrive, and fetching them no longer blocks the bar. Links that carry only a URL are captured too.
-- The Settings window opens above the bar, shrunk to fit, instead of underneath it.
-- The ignore list's box grows with its text instead of letting lines run below it.
+
+## 1.1.0 — 2026-10-23
+
 - Optional backup to iCloud Drive, asked about once on first launch. It runs on its own after changes settle and before quitting, and a new Mac or a fresh macOS install restores history, collections, and settings automatically. The live database never syncs; a compressed snapshot (36 MB for 110k items) and the stored files do. `pasteloop backup` and `pasteloop restore --from <folder>` do the same from a terminal.
 - Return now pastes text without its formatting, and Shift-Return pastes it with formatting. Images and files still paste as themselves on Return and as paths on Shift-Return. Settings → General → Paste text switches the default back. The context menu names the second paste for each kind of card ("Paste with Formatting", "Paste as Path").
+- Copies from an iPhone (Universal Clipboard) are captured: PasteLoop waits for their types to arrive, and fetching them no longer blocks the bar. Links that carry only a URL are captured too.
+- Every paste explains how to allow pasting into apps while Accessibility permission is missing, instead of silently copying; Don't Ask Again (or a Settings switch) turns that off.
+- In any dialog, Return presses the highlighted button, so a second Return on the Accessibility explanation opens System Settings.
+- The Settings window opens above the bar, shrunk to fit, instead of underneath it.
+- The ignore list's box grows with its text instead of letting lines run below it.
 
 ## 1.0.0 — 2026-09-27
 
