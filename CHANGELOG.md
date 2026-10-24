@@ -6,6 +6,8 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
 
+## 1.2.0 — 2026-10-24
+
 - File cards show the picture of an image file, such as a copied screenshot, with its name below. PasteLoop keeps a smaller copy, so the picture stays after the file is moved or deleted, and the text in it is searchable. Running the Paste import again adds the pictures Paste kept with file clips.
 - Quitting is instant: the bar, menu-bar icon, and shortcuts go away at once, and the final iCloud backup finishes in the background. Reopening right away waits for it.
 - Importing from Paste brings over images and files too: the importer now reads the clips Paste stores outside its database, which are most images and files and the longest texts. It also finds the Mac App Store edition of Paste, and running it again only adds what is missing, without duplicating collections.
