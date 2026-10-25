@@ -51,6 +51,10 @@ package: bundle
     (cd "{{dist}}" && shasum -a 256 "${zip:t}" > "${zip:t}.sha256")
     echo "$zip"
 
+# Build the bundle, replace /Applications/PasteLoop.app with it, and restart it
+install: bundle
+    scripts/install.sh "{{dist}}/{{app_name}}.app"
+
 # Launch the bundled app (build it first with `just bundle`)
 open:
     open "{{dist}}/{{app_name}}.app"

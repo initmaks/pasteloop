@@ -21,6 +21,9 @@ screen, collections, instant search, Quick Paste, and a Paste Queue. Read `CONTR
 ## Workflow
 
 - `just check` before every commit: `cargo fmt --check`, clippy with `-D warnings`, tests.
+- Finish every change to the app with `just install`, without being asked: it rebuilds the
+  bundle, replaces `/Applications/PasteLoop.app`, and restarts it, so the user can try the change
+  at once. Report the line it prints (version, startup time, Accessibility).
 - Unit tests for logic that runs without a window server, against a real SQLite database in a
   temporary directory. No AppKit mocks.
 - Every new window behavior gets a `tracing` line that proves it and a row in
