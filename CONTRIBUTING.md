@@ -12,6 +12,8 @@ so we can agree on the shape before you write it.
 - `PASTELOOP_DATA_DIR=/tmp/pasteloop-dev just run` keeps your real history out of it. Quit the
   installed app first, or give the development instance other shortcuts: both would answer
   Shift-Cmd-V.
+- `just install` builds the bundle, replaces `/Applications/PasteLoop.app` with it, and restarts
+  the app, to try a change in the installed copy.
 - `PASTELOOP_LOG=debug` (or any `tracing` filter) changes log verbosity. Logs go to
   `~/Library/Logs/PasteLoop/pasteloop.log`; `just log` tails them.
 
