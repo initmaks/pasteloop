@@ -63,6 +63,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 8 | Search for an item that is in a collection | Its card shows a colored dot per collection | — |
 | 9 | Cmd-G on a search result | Search closes, the home list scrolls to the item, 600 ms highlight | — |
 | 10 | Match highlight | The matched text in a text card is highlighted | — |
+| 11 | Type `rust book` in the search field; Cmd-R, Cmd-E, and Cmd-N and type words with spaces; Shift-Cmd-N and type a two-word name | Every Space types a space; the preview window never opens and the editor stays open | — |
 
 ## Collections
 

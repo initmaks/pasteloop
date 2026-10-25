@@ -6,6 +6,8 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
 
+- Space types a space in the search field, the rename and text editor, and the collection name field. Before, it opened the preview, and in the editor it closed the edit unsaved.
+
 ## 1.2.0 — 2026-10-24
 
 - File cards show the picture of an image file, such as a copied screenshot, with its name below. PasteLoop keeps a smaller copy, so the picture stays after the file is moved or deleted, and the text in it is searchable. Running the Paste import again adds the pictures Paste kept with file clips.

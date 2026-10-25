@@ -8,9 +8,9 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, SharedString, Style, TextRun,
-    TextStyle, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, font,
-    point, prelude::*, px, relative, size,
+    MouseMoveEvent, MouseUpEvent, NoAction, PaintQuad, Pixels, Point, Render, SharedString, Style,
+    TextRun, TextStyle, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill,
+    font, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -72,6 +72,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-c", Copy, c),
         KeyBinding::new("cmd-x", Cut, c),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, c),
+        // Space types a space: this hides the panel's Space (preview) binding inside any field.
+        KeyBinding::new("space", NoAction, c),
     ]
 }
 
