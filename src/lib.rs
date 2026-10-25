@@ -1313,3 +1313,32 @@ fn spawn_maintenance(state: Entity<AppState>, panel: WindowHandle<PanelView>, cx
     })
     .detach();
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::{KeyContext, Keymap, Keystroke};
+
+    use super::*;
+
+    /// The action `key` runs with focus inside `contexts` (outermost first), if any.
+    fn action_for(key: &str, contexts: &[&str]) -> Option<&'static str> {
+        let mut keymap = Keymap::default();
+        keymap.add_bindings(text_input::key_bindings());
+        keymap.add_bindings(panel_key_bindings(&Settings::default()));
+        let contexts: Vec<KeyContext> = contexts
+            .iter()
+            .map(|c| KeyContext::parse(c).unwrap())
+            .collect();
+        let (bindings, _) = keymap.bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts);
+        bindings.first().map(|b| b.action().name())
+    }
+
+    const CARDS: &[&str] = &["Panel"];
+    const FIELD: &[&str] = &["Panel", "TextInput"];
+
+    #[test]
+    fn space_previews_on_cards_and_types_in_fields() {
+        assert_eq!(action_for("space", CARDS), Some("panel::QuickLook"));
+        assert_eq!(action_for("space", FIELD), None);
+    }
+}
