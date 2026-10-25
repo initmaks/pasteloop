@@ -7,7 +7,7 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, Hsla,
-    InspectorElementId, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    InspectorElementId, IntoElement, KeyBinding, KeyContext, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, NoAction, PaintQuad, Pixels, Point, Render, SharedString, Style,
     TextRun, TextStyle, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill,
     font, point, prelude::*, px, relative, size,
@@ -42,22 +42,27 @@ actions!(
 );
 
 pub const KEY_CONTEXT: &str = "TextInput";
+/// Added to the key context of a field with `list_filter` set.
+const LIST_FILTER_CONTEXT: &str = "ListFilter";
 const FONT_SIZE: Pixels = px(13.);
 
 /// Bindings scoped to the `TextInput` context. Registered once at startup.
 pub fn key_bindings() -> Vec<KeyBinding> {
     let c = Some(KEY_CONTEXT);
+    // A list filter does not take the arrow keys, so the owner's bindings for them apply.
+    let arrows = format!("{KEY_CONTEXT} && !{LIST_FILTER_CONTEXT}");
+    let a = Some(arrows.as_str());
     vec![
         KeyBinding::new("backspace", Backspace, c),
         KeyBinding::new("delete", Delete, c),
-        KeyBinding::new("left", Left, c),
-        KeyBinding::new("right", Right, c),
-        KeyBinding::new("up", Up, c),
-        KeyBinding::new("down", Down, c),
-        KeyBinding::new("shift-left", SelectLeft, c),
-        KeyBinding::new("shift-right", SelectRight, c),
-        KeyBinding::new("shift-up", SelectUp, c),
-        KeyBinding::new("shift-down", SelectDown, c),
+        KeyBinding::new("left", Left, a),
+        KeyBinding::new("right", Right, a),
+        KeyBinding::new("up", Up, a),
+        KeyBinding::new("down", Down, a),
+        KeyBinding::new("shift-left", SelectLeft, a),
+        KeyBinding::new("shift-right", SelectRight, a),
+        KeyBinding::new("shift-up", SelectUp, a),
+        KeyBinding::new("shift-down", SelectDown, a),
         KeyBinding::new("cmd-a", SelectAll, c),
         KeyBinding::new("home", LineStart, c),
         KeyBinding::new("end", LineEnd, c),
@@ -117,6 +122,9 @@ pub struct TextInput {
     multiline: bool,
     monospace: bool,
     pub colors: InputColors,
+    /// The field filters a list (the panel's search): the arrow keys move through the list, never
+    /// the caret.
+    pub list_filter: bool,
     /// Paragraph layouts from the last paint, one per `\n`-separated line, with their y offsets.
     last_layout: Vec<(WrappedLine, Pixels)>,
     last_bounds: Option<Bounds<Pixels>>,
@@ -144,6 +152,7 @@ impl TextInput {
             multiline,
             monospace: false,
             colors: InputColors::default(),
+            list_filter: false,
             last_layout: Vec::new(),
             last_bounds: None,
             last_line_height: px(18.),
@@ -955,8 +964,13 @@ impl Element for TextElement {
 
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut key_context = KeyContext::default();
+        key_context.add(KEY_CONTEXT);
+        if self.list_filter {
+            key_context.add(LIST_FILTER_CONTEXT);
+        }
         div()
-            .key_context(KEY_CONTEXT)
+            .key_context(key_context)
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))

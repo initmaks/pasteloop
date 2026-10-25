@@ -277,7 +277,11 @@ impl PanelView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| TextInput::new(cx, "Search", false));
+        let search = cx.new(|cx| {
+            let mut input = TextInput::new(cx, "Search", false);
+            input.list_filter = true;
+            input
+        });
         let editor_input = cx.new(|cx| TextInput::new(cx, "Text", true));
         let collection_name = cx.new(|cx| TextInput::new(cx, "Collection name", false));
         let height = state.read(cx).settings.panel_height;

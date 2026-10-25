@@ -64,6 +64,7 @@ against a scratch database. Quit any other clipboard manager that uses Shift-Cmd
 | 9 | Cmd-G on a search result | Search closes, the home list scrolls to the item, 600 ms highlight | — |
 | 10 | Match highlight | The matched text in a text card is highlighted | — |
 | 11 | Type `rust book` in the search field; Cmd-R, Cmd-E, and Cmd-N and type words with spaces; Shift-Cmd-N and type a two-word name | Every Space types a space; the preview window never opens and the editor stays open | — |
+| 12 | Type `rus`, press Right twice, Shift-Right, Left, Up; type `t` | The arrows move the selection through the results as on the cards, the caret stays at the end of the field, and `t` extends the search. In Cmd-R and Cmd-E the arrows still move the caret | — |
 
 ## Collections
 
