@@ -1335,10 +1335,34 @@ mod tests {
 
     const CARDS: &[&str] = &["Panel"];
     const FIELD: &[&str] = &["Panel", "TextInput"];
+    const SEARCH: &[&str] = &["Panel", "TextInput ListFilter"];
 
     #[test]
     fn space_previews_on_cards_and_types_in_fields() {
         assert_eq!(action_for("space", CARDS), Some("panel::QuickLook"));
         assert_eq!(action_for("space", FIELD), None);
+        assert_eq!(action_for("space", SEARCH), None);
+    }
+
+    #[test]
+    fn arrows_in_search_move_through_cards() {
+        for (key, action) in [
+            ("left", "panel::PrevCard"),
+            ("right", "panel::NextCard"),
+            ("shift-left", "panel::ExtendLeft"),
+            ("shift-right", "panel::ExtendRight"),
+            ("up", "panel::FirstCard"),
+        ] {
+            assert_eq!(action_for(key, SEARCH), Some(action), "{key} in search");
+            assert_eq!(action_for(key, CARDS), Some(action), "{key} on cards");
+        }
+        for key in ["down", "shift-up", "shift-down"] {
+            assert_eq!(action_for(key, SEARCH), None, "{key} in search");
+        }
+        assert_eq!(action_for("left", FIELD), Some("text_input::Left"));
+        assert_eq!(
+            action_for("shift-down", FIELD),
+            Some("text_input::SelectDown")
+        );
     }
 }

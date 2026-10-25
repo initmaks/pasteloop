@@ -7,6 +7,7 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 <!-- One line per entry: GitHub release notes keep line breaks. -->
 
 - Space types a space in the search field, the rename and text editor, and the collection name field. Before, it opened the preview, and in the editor it closed the edit unsaved.
+- In the search field the arrow keys move through the cards, as they do when the cards have focus, instead of moving the text cursor.
 
 ## 1.2.0 — 2026-10-24
 
