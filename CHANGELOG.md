@@ -6,6 +6,10 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
 
+## 1.2.2 — 2026-11-16
+
+- Security: the bundled SQLite is updated to 3.54.1 (CVE-2026-119375, RUSTSEC-2026-0459). Before, opening a crafted database together with its write-ahead log could return stale memory; PasteLoop opens databases it did not create when importing from Paste or restoring a backup.
+
 ## 1.2.1 — 2026-10-25
 
 - Space types a space in the search field, the rename and text editor, and the collection name field. Before, it opened the preview, and in the editor it closed the edit unsaved.
