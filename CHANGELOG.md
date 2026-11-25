@@ -6,6 +6,8 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
 
+## 1.3.0 — 2026-11-25
+
 - Releases are signed with a Developer ID and notarized by Apple, so macOS opens a downloaded copy without the Open Anyway step. After updating from an earlier version, remove PasteLoop from the Accessibility list once and add it again; later updates keep the permission.
 
 ## 1.2.2 — 2026-11-16
