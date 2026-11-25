@@ -35,15 +35,19 @@ check:
 run:
     cargo run
 
-# Build the release binary and wrap it in dist/PasteLoop.app, signed with the "PasteLoop Dev"
-# certificate when present (see scripts/make-dev-cert.sh), else ad hoc.
+# Build the release binary and wrap it in dist/PasteLoop.app, signed with a Developer ID when one
+# is in the keychain, else the "PasteLoop Dev" certificate (scripts/make-dev-cert.sh), else ad hoc.
 bundle: release
     scripts/bundle.sh "{{dist}}" "{{app_name}}" "{{bundle_id}}" target/release/pasteloop
 
-# Zip the bundle for a release: dist/PasteLoop-<version>-arm64.zip and its SHA-256
+# Zip the bundle for a release: dist/PasteLoop-<version>-arm64.zip and its SHA-256. Notarizes
+# first when notary credentials are set (see scripts/notarize.sh).
 package: bundle
     #!/bin/zsh
     set -euo pipefail
+    if [[ -n "${NOTARY_PROFILE:-}${NOTARY_KEY:-}" ]]; then
+      scripts/notarize.sh "{{dist}}/{{app_name}}.app"
+    fi
     version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
     zip="{{dist}}/{{app_name}}-$version-arm64.zip"
     rm -f "$zip"
@@ -63,7 +67,7 @@ open:
 dev-cert:
     scripts/make-dev-cert.sh
 
-# Sign with Developer ID and submit for notarization (needs DEVELOPER_ID and NOTARY_PROFILE)
+# Notarize and staple the Developer ID-signed bundle (needs notary credentials; see the script)
 notarize: bundle
     scripts/notarize.sh "{{dist}}/{{app_name}}.app"
 

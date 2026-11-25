@@ -50,9 +50,15 @@ cat > "$contents/Info.plist" <<PLIST
 PLIST
 printf 'APPL????' > "$contents/PkgInfo"
 
-# Prefer an explicit identity, then the self-signed dev certificate, then ad hoc.
+# Prefer an explicit identity, then a Developer ID, then the self-signed dev certificate, then
+# ad hoc. A Developer ID signature keeps Accessibility across rebuilds and across local and
+# released builds, since macOS matches the team ID rather than the certificate.
 if [[ -z "$identity" ]]; then
-  if security find-identity -v -p codesigning 2>/dev/null | grep -q '"PasteLoop Dev"'; then
+  identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+  developer_id="$(grep -m1 -o '"Developer ID Application: [^"]*"' <<<"$identities" | tr -d '"' || true)"
+  if [[ -n "$developer_id" ]]; then
+    identity="$developer_id"
+  elif grep -q '"PasteLoop Dev"' <<<"$identities"; then
     identity="PasteLoop Dev"
   else
     identity="-"
@@ -61,7 +67,10 @@ fi
 if [[ "$identity" == "-" ]]; then
   echo "signing ad hoc (Accessibility permission will not survive rebuilds; run scripts/make-dev-cert.sh)" >&2
 fi
-codesign --force --sign "$identity" --options runtime --timestamp=none \
+# Notarization needs a secure timestamp, which only a Developer ID signature can carry.
+timestamp="--timestamp=none"
+[[ "$identity" == "Developer ID Application: "* ]] && timestamp="--timestamp"
+codesign --force --sign "$identity" --options runtime "$timestamp" \
   --entitlements scripts/entitlements.plist "$app"
 codesign --verify --verbose=2 "$app" 2>&1 | sed 's/^/codesign: /' >&2
 echo "built $app (signed: $identity)"

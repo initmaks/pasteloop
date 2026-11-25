@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # A dry run: builds, signs, notarizes, and verifies, but publishes nothing.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -28,7 +30,7 @@ jobs:
       - name: Check the tag matches Cargo.toml
         run: |
           version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
-          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+          if [[ "$GITHUB_REF_TYPE" == tag && "v$version" != "$GITHUB_REF_NAME" ]]; then
             echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
             exit 1
           fi
@@ -37,8 +39,52 @@ jobs:
       - name: Test
         run: cargo test --release
 
-      - name: Build, bundle, and zip
+      - name: Load the Developer ID certificate and notary key
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY_B64: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: |
+          for name in DEVELOPER_ID_P12 DEVELOPER_ID_P12_PASSWORD NOTARY_KEY_B64 NOTARY_KEY_ID NOTARY_ISSUER; do
+            [[ -n "${(P)name}" ]] || { echo "secret for $name is not set" >&2; exit 1; }
+          done
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          base64 -D <<<"$DEVELOPER_ID_P12" > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" \
+            -P "$DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/developer-id.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" ${(f)"$(security list-keychains -d user | tr -d '" ')"}
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | grep -m1 -o '"Developer ID Application: [^"]*"' | tr -d '"')"
+          [[ -n "$identity" ]] || { echo "no Developer ID identity in the certificate secret" >&2; exit 1; }
+          umask 077
+          base64 -D <<<"$NOTARY_KEY_B64" > "$RUNNER_TEMP/notary-key.p8"
+          {
+            echo "CODESIGN_IDENTITY=$identity"
+            echo "NOTARY_KEY=$RUNNER_TEMP/notary-key.p8"
+            echo "NOTARY_KEY_ID=$NOTARY_KEY_ID"
+            echo "NOTARY_ISSUER=$NOTARY_ISSUER"
+          } >> "$GITHUB_ENV"
+        shell: zsh -euo pipefail {0}
+
+      - name: Build, sign, notarize, and zip
         run: just package
+
+      - name: Check the zip opens on a fresh Mac
+        run: |
+          check="$RUNNER_TEMP/check"
+          mkdir "$check"
+          ditto -x -k "dist/PasteLoop-$VERSION-arm64.zip" "$check"
+          xattr -w com.apple.quarantine "0081;$(printf %x "$(date +%s)");Safari;" "$check/PasteLoop.app"
+          xcrun stapler validate "$check/PasteLoop.app"
+          spctl --assess --type execute --verbose=2 "$check/PasteLoop.app"
 
       - name: Release notes from CHANGELOG.md
         run: |
@@ -51,14 +97,14 @@ jobs:
 
           ### Install
 
-          Download the zip, unzip it, and move `PasteLoop.app` to `/Applications`. This build is
-          not notarized: after the first launch attempt, open System Settings → Privacy & Security
-          and click **Open Anyway**, or run `xattr -dr com.apple.quarantine /Applications/PasteLoop.app`.
+          Download the zip, unzip it, and move `PasteLoop.app` to `/Applications`. The app is
+          signed with a Developer ID and notarized by Apple, so it opens like any other download.
           Requires an Apple Silicon Mac with macOS 15 or later.
           NOTES
           cat notes.md
 
       - name: Publish
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -67,3 +113,9 @@ jobs:
             "dist/PasteLoop-$VERSION-arm64.zip.sha256" \
             --title "PasteLoop $VERSION" \
             --notes-file notes.md
+
+      - name: Remove the signing keychain and notary key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary-key.p8"
