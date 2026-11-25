@@ -9,6 +9,8 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste: a compile-time macro in GPUI's Metal bindings" },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz: GPUI's SVG renderer, which draws only the bundled icons" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser: the same SVG renderer's font database" },
+    # PasteLoop formats dates with chrono too, but GPUI keeps it in the tree either way.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, no known vulnerability; GPUI depends on it" },
 ]
 
 [licenses]
