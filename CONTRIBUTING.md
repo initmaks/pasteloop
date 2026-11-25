@@ -18,8 +18,10 @@ so we can agree on the shape before you write it.
   `~/Library/Logs/PasteLoop/pasteloop.log`; `just log` tails them.
 
 macOS ties the Accessibility grant to the code signature. An ad-hoc signed bundle changes
-signature on every build, so `just bundle` signs with a local certificate named
-"PasteLoop Dev" when one exists. Create it once with `just dev-cert`.
+signature on every build, so `just bundle` signs with a Developer ID Application certificate
+when one is in the keychain, else with a local certificate named "PasteLoop Dev" when one
+exists. Create that one with `just dev-cert`. A Developer ID build keeps the grant across
+rebuilds and shares it with released builds.
 
 ## Before you send a change
 
@@ -78,9 +80,15 @@ These are requirements, and a change that breaks one needs a very good reason.
 1. Move the `Unreleased` notes in `CHANGELOG.md` under a new version heading and set the same
    version in `Cargo.toml`.
 2. Commit, then tag and push: `git tag v1.2.3 && git push origin main v1.2.3`.
-3. The release workflow builds `PasteLoop.app`, signs it ad hoc, zips it with a SHA-256
-   checksum, and publishes a GitHub release with that version's changelog section.
+3. The release workflow builds `PasteLoop.app`, signs it with the Developer ID, has Apple
+   notarize it, staples the ticket, zips it with a SHA-256 checksum, checks that the zip passes
+   Gatekeeper, and publishes a GitHub release with that version's changelog section.
 
-To ship a notarized build instead, run `just notarize` locally with a Developer ID
-(`DEVELOPER_ID` and a `NOTARY_PROFILE` from `xcrun notarytool store-credentials`), zip the
-stapled app with `ditto -c -k --keepParent`, and replace the asset on the release.
+The workflow reads five repository secrets: `DEVELOPER_ID_P12` (the certificate and its private
+key as base64 PKCS#12) with `DEVELOPER_ID_P12_PASSWORD`, and an App Store Connect team API key
+with the Developer role: `NOTARY_KEY` (the `.p8` file as base64), `NOTARY_KEY_ID` and
+`NOTARY_ISSUER`. Run it by hand from the Actions tab for a dry run that publishes nothing.
+
+To notarize locally, save the API key once with
+`xcrun notarytool store-credentials <profile> --key <AuthKey.p8> --key-id <ID> --issuer <ID>`,
+then run `NOTARY_PROFILE=<profile> just package` (or `just notarize` for the bundle alone).

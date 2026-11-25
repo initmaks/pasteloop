@@ -37,20 +37,16 @@ Requires an Apple Silicon Mac with macOS 15 or later.
 
 1. Download `PasteLoop-<version>-arm64.zip` from
    [Releases](https://github.com/initmaks/pasteloop/releases), unzip it, and move
-   `PasteLoop.app` to `/Applications`.
-2. The release is not notarized yet, so macOS refuses the first launch. Open it once, then go
-   to System Settings → Privacy & Security and click **Open Anyway** next to the PasteLoop
-   message. Or clear the download flag from a terminal:
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/PasteLoop.app
-   ```
-3. PasteLoop needs Accessibility permission (System Settings → Privacy & Security →
+   `PasteLoop.app` to `/Applications`. Releases are signed with a Developer ID and notarized by
+   Apple, so the app opens like any other download.
+2. PasteLoop needs Accessibility permission (System Settings → Privacy & Security →
    Accessibility) to press Cmd-V for you, and asks each time you paste until it has it. Choose
    Copy Only to paste yourself this time, or Don't Ask Again to stop the reminder (Settings →
    General turns it back on). macOS only honors the permission for a
    process that had it when it launched, so PasteLoop offers to relaunch itself after you grant
-   it. Each new version is a new signature to macOS: after an update, remove PasteLoop from the
-   Accessibility list and add it again.
+   it. The permission carries over to later versions. Versions before 1.3.0 were not signed with
+   a Developer ID: after updating from one, remove PasteLoop from the Accessibility list and add
+   it again.
 
 PasteLoop offers to start at login on its first launch; change that later in Settings.
 

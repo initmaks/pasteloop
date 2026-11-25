@@ -6,6 +6,8 @@ All notable changes to PasteLoop. Versions follow [Semantic Versioning](https://
 
 <!-- One line per entry: GitHub release notes keep line breaks. -->
 
+- Releases are signed with a Developer ID and notarized by Apple, so macOS opens a downloaded copy without the Open Anyway step. After updating from an earlier version, remove PasteLoop from the Accessibility list once and add it again; later updates keep the permission.
+
 ## 1.2.2 — 2026-11-16
 
 - Security: the bundled SQLite is updated to 3.54.1 (CVE-2026-119375, RUSTSEC-2026-0459). Before, opening a crafted database together with its write-ahead log could return stale memory; PasteLoop opens databases it did not create when importing from Paste or restoring a backup.
